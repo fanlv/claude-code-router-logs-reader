@@ -125,6 +125,39 @@ app.get('/api/files/:filename', (req, res) => {
     res.json({ filename, content, source });
 });
 
+app.get('/api/files/:filename/line/:line', (req, res) => {
+    const filename = req.params.filename;
+    const lineNum = parseInt(req.params.line, 10);
+    const source = req.query.source || 'system';
+    
+    if (!filename.endsWith('.log')) {
+        return res.status(400).json({ error: 'Invalid file type' });
+    }
+    if (isNaN(lineNum) || lineNum < 1) {
+        return res.status(400).json({ error: 'Invalid line number' });
+    }
+    
+    const content = getFileContent(filename, source);
+    if (content === null) {
+        return res.status(404).json({ error: 'File not found' });
+    }
+    
+    const lines = content.split('\n').filter(line => line.trim());
+    if (lineNum > lines.length) {
+        return res.status(404).json({ error: 'Line not found' });
+    }
+    
+    const line = lines[lineNum - 1];
+    try {
+        const json = JSON.parse(line);
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.send(JSON.stringify(json, null, 2));
+    } catch (e) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send(line);
+    }
+});
+
 app.delete('/api/files/:filename', (req, res) => {
     const filename = req.params.filename;
     const source = req.query.source || 'system';

@@ -285,6 +285,25 @@
             color: #2e7d32;
         }
 
+        .log-view-full {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #888888;
+            flex-shrink: 0;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.15s ease;
+            font-size: 12px;
+        }
+
+        .log-view-full:hover {
+            color: #333333;
+            background-color: #e0e0e0;
+        }
+
         .toast {
             position: fixed;
             top: 20px;
@@ -896,6 +915,7 @@
                             <div class="log-summary" onclick="toggleEntry(${entry.index})">
                                 <span class="log-toggle">▶</span>
                                 <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制 JSON">📋</span>
+                                <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整 JSON">⧉</span>
                                 <span class="log-line-num">${entry.index}</span>
                                 <span class="log-time">${time}</span>
                                 <span class="log-level ${levelClass}">${levelText}</span>
@@ -916,6 +936,7 @@
                             <div class="log-summary" onclick="toggleEntry(${entry.index})">
                                 <span class="log-toggle">▶</span>
                                 <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制内容">📋</span>
+                                <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整内容">⧉</span>
                                 <span class="log-line-num">${entry.index}</span>
                                 <span class="log-time">--:--:-- ---</span>
                                 <span class="log-level debug">RAW</span>
@@ -1014,6 +1035,16 @@
                 console.error('Failed to copy:', err);
                 showToast('复制失败：' + err.message);
             });
+        }
+
+        function viewFullJson(index, event) {
+            event.stopPropagation();
+            if (!currentFile || !currentSource) {
+                showToast('请先选择文件');
+                return;
+            }
+            const url = `/api/files/${encodeURIComponent(currentFile)}/line/${index}?source=${currentSource}`;
+            window.open(url, '_blank');
         }
 
         async function deleteFile(filename, source, event) {
