@@ -692,6 +692,15 @@
             });
         }
 
+        function formatDateFromFilename(filename) {
+            const match = filename.match(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+            if (match) {
+                const [, year, month, day, hour, minute, second] = match;
+                return `${year}/${month}/${day} ${hour}:${minute}`;
+            }
+            return filename;
+        }
+
         function formatLogTime(timestamp) {
             if (!timestamp) return '--:--:-- ---';
             const date = new Date(timestamp);
@@ -947,6 +956,34 @@
             }, 1500);
         }
 
+        function copyToClipboard(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text);
+            }
+            return new Promise((resolve, reject) => {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-9999px';
+                textarea.style.top = '-9999px';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                try {
+                    const successful = document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    if (successful) {
+                        resolve();
+                    } else {
+                        reject(new Error('execCommand copy failed'));
+                    }
+                } catch (err) {
+                    document.body.removeChild(textarea);
+                    reject(err);
+                }
+            });
+        }
+
         function copyJson(index, event) {
             event.stopPropagation();
             const btn = event.currentTarget;
@@ -957,7 +994,7 @@
             }
             
             const text = entry.raw;
-            navigator.clipboard.writeText(text).then(() => {
+            copyToClipboard(text).then(() => {
                 btn.classList.add('copied');
                 btn.innerHTML = '✓';
                 showToast('复制成功');
@@ -1061,7 +1098,7 @@
                      data-source="${file.source}"
                      onclick="selectFile('${file.name}', '${file.source}')">
                     <div class="file-date">
-                        ${formatDate(file.mtime)}
+                        ${formatDateFromFilename(file.name)}
                         <span class="file-source ${file.source}">${file.source === 'upload' ? '上传' : '系统'}</span>
                     </div>
                     <div class="file-meta">
