@@ -629,6 +629,7 @@
                 <div class="header-actions">
                     <div class="filter-group" id="filterGroup" style="display: none;">
                         <input type="text" id="filterReqId" class="filter-input" placeholder="reqId (如: req-5)" oninput="applyFilters()">
+                        <input type="text" id="filterContent" class="filter-input" placeholder="搜索内容..." oninput="applyFilters()" style="width: 150px;">
                         <label class="filter-checkbox">
                             <input type="checkbox" id="filterType" onchange="applyFilters()">
                             <span>type</span>
@@ -809,6 +810,7 @@
 
         function applyFilters() {
             const filterReqId = document.getElementById('filterReqId').value.trim();
+            const filterContent = document.getElementById('filterContent').value.trim().toLowerCase();
             const filterType = document.getElementById('filterType').checked;
             const filterMsg = document.getElementById('filterMsg').checked;
             const filterRequestBody = document.getElementById('filterRequestBody').checked;
@@ -816,20 +818,26 @@
             
             const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse;
             const hasReqIdFilter = filterReqId !== '';
+            const hasContentFilter = filterContent !== '';
             
-            if (!hasCheckboxFilter && !hasReqIdFilter) {
+            if (!hasCheckboxFilter && !hasReqIdFilter && !hasContentFilter) {
                 filteredEntries = logEntries;
             } else {
                 filteredEntries = logEntries.filter(entry => {
-                    if (!entry.json) return false;
-                    
                     if (hasReqIdFilter) {
-                        if (!entry.json.reqId || !entry.json.reqId.includes(filterReqId)) {
+                        if (!entry.json || !entry.json.reqId || !entry.json.reqId.includes(filterReqId)) {
+                            return false;
+                        }
+                    }
+                    
+                    if (hasContentFilter) {
+                        if (!entry.raw.toLowerCase().includes(filterContent)) {
                             return false;
                         }
                     }
                     
                     if (hasCheckboxFilter) {
+                        if (!entry.json) return false;
                         const hasType = filterType && entry.json.type;
                         const hasMsg = filterMsg && entry.json.msg;
                         const hasRequestBody = filterRequestBody && entry.json.type === 'request body';
@@ -1128,6 +1136,7 @@
                 const data = await response.json();
                 logEntries = parseLogContent(data.content);
                 document.getElementById('filterReqId').value = '';
+                document.getElementById('filterContent').value = '';
                 document.getElementById('filterType').checked = false;
                 document.getElementById('filterMsg').checked = false;
                 document.getElementById('filterRequestBody').checked = false;
