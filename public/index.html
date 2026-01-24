@@ -667,6 +667,7 @@
                         </label>
                     </div>
                     <span class="log-count" id="logCount"></span>
+                    <button class="btn" id="shareBtn" onclick="shareLink()" style="display: none;">分享链接</button>
                     <button class="btn" id="expandAllBtn" onclick="expandAll()" style="display: none;">全部展开</button>
                     <button class="btn" id="collapseAllBtn" onclick="collapseAll()" style="display: none;">全部折叠</button>
                     <div class="status-indicator">
@@ -874,6 +875,7 @@
         function renderLogEntries(entries) {
             const contentBody = document.getElementById('contentBody');
             const logCount = document.getElementById('logCount');
+            const shareBtn = document.getElementById('shareBtn');
             const expandAllBtn = document.getElementById('expandAllBtn');
             const collapseAllBtn = document.getElementById('collapseAllBtn');
             const filterGroup = document.getElementById('filterGroup');
@@ -885,6 +887,7 @@
             } else {
                 logCount.textContent = `${totalCount} 条日志`;
             }
+            shareBtn.style.display = 'inline-block';
             expandAllBtn.style.display = 'inline-block';
             collapseAllBtn.style.display = 'inline-block';
             filterGroup.style.display = 'flex';
@@ -1047,6 +1050,58 @@
             window.open(url, '_blank');
         }
 
+        function shareLink() {
+            if (!currentFile || !currentSource) {
+                showToast('请先选择文件');
+                return;
+            }
+            
+            const params = new URLSearchParams();
+            params.set('file', currentFile);
+            params.set('source', currentSource);
+            
+            const filterReqId = document.getElementById('filterReqId').value.trim();
+            const filterContent = document.getElementById('filterContent').value.trim();
+            const filterType = document.getElementById('filterType').checked;
+            const filterMsg = document.getElementById('filterMsg').checked;
+            const filterRequestBody = document.getElementById('filterRequestBody').checked;
+            const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
+            
+            if (filterReqId) params.set('reqId', filterReqId);
+            if (filterContent) params.set('content', filterContent);
+            if (filterType) params.set('type', '1');
+            if (filterMsg) params.set('msg', '1');
+            if (filterRequestBody) params.set('requestBody', '1');
+            if (filterOriginalResponse) params.set('originalResponse', '1');
+            
+            const shareUrl = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+            
+            copyToClipboard(shareUrl).then(() => {
+                showToast('分享链接已复制到剪贴板');
+            }).catch(() => {
+                prompt('复制以下链接分享：', shareUrl);
+            });
+        }
+
+        function loadFromUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            const file = params.get('file');
+            const source = params.get('source');
+            
+            if (!file || !source) return null;
+            
+            return {
+                file,
+                source,
+                reqId: params.get('reqId') || '',
+                content: params.get('content') || '',
+                type: params.get('type') === '1',
+                msg: params.get('msg') === '1',
+                requestBody: params.get('requestBody') === '1',
+                originalResponse: params.get('originalResponse') === '1'
+            };
+        }
+
         async function deleteFile(filename, source, event) {
             event.stopPropagation();
             if (!confirm(`确定要删除文件 "${filename}" 吗？`)) {
@@ -1067,6 +1122,7 @@
                     currentSource = null;
                     document.getElementById('contentTitle').textContent = '选择一个文件查看';
                     document.getElementById('logCount').textContent = '';
+                    document.getElementById('shareBtn').style.display = 'none';
                     document.getElementById('expandAllBtn').style.display = 'none';
                     document.getElementById('collapseAllBtn').style.display = 'none';
                     document.getElementById('filterGroup').style.display = 'none';
@@ -1240,6 +1296,7 @@
                             currentFile = null;
                             document.getElementById('contentTitle').textContent = '选择一个文件查看';
                             document.getElementById('logCount').textContent = '';
+                            document.getElementById('shareBtn').style.display = 'none';
                             document.getElementById('expandAllBtn').style.display = 'none';
                             document.getElementById('collapseAllBtn').style.display = 'none';
                             document.getElementById('filterGroup').style.display = 'none';
@@ -1270,6 +1327,23 @@
                 const response = await fetch('/api/files');
                 files = await response.json();
                 renderFileList();
+                
+                const urlState = loadFromUrlParams();
+                if (urlState) {
+                    const fileExists = files.some(f => f.name === urlState.file && f.source === urlState.source);
+                    if (fileExists) {
+                        await selectFile(urlState.file, urlState.source);
+                        
+                        document.getElementById('filterReqId').value = urlState.reqId;
+                        document.getElementById('filterContent').value = urlState.content;
+                        document.getElementById('filterType').checked = urlState.type;
+                        document.getElementById('filterMsg').checked = urlState.msg;
+                        document.getElementById('filterRequestBody').checked = urlState.requestBody;
+                        document.getElementById('filterOriginalResponse').checked = urlState.originalResponse;
+                        
+                        applyFilters();
+                    }
+                }
             } catch (error) {
                 console.error('Failed to load files:', error);
             }
