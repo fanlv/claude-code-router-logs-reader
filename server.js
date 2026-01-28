@@ -18,19 +18,29 @@ if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+function decodeFilename(filename) {
+    try {
+        return Buffer.from(filename, 'latin1').toString('utf8');
+    } catch (e) {
+        return filename;
+    }
+}
+
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, UPLOAD_DIR);
     },
     filename: (req, file, cb) => {
-        cb(null, file.originalname);
+        const decodedName = decodeFilename(file.originalname);
+        cb(null, decodedName);
     }
 });
 
 const upload = multer({
     storage: storage,
     fileFilter: (req, file, cb) => {
-        if (file.originalname.endsWith('.log')) {
+        const decodedName = decodeFilename(file.originalname);
+        if (decodedName.endsWith('.log')) {
             cb(null, true);
         } else {
             cb(new Error('Only .log files are allowed'));
