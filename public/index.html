@@ -695,6 +695,21 @@
         let ws = null;
         let logEntries = [];
         let filteredEntries = [];
+        
+        const VIRTUAL_SCROLL_CONFIG = {
+            itemHeight: 37,
+            bufferSize: 10,
+            renderBatchSize: 50
+        };
+        let virtualScrollState = {
+            scrollTop: 0,
+            containerHeight: 0,
+            startIndex: 0,
+            endIndex: 0,
+            isRendering: false
+        };
+        let filterDebounceTimer = null;
+        const FILTER_DEBOUNCE_MS = 150;
 
         function formatFileSize(bytes) {
             if (bytes < 1024) return bytes + ' B';
@@ -829,47 +844,59 @@
         }
 
         function applyFilters() {
-            const filterReqId = document.getElementById('filterReqId').value.trim();
-            const filterContent = document.getElementById('filterContent').value.trim().toLowerCase();
-            const filterType = document.getElementById('filterType').checked;
-            const filterMsg = document.getElementById('filterMsg').checked;
-            const filterRequestBody = document.getElementById('filterRequestBody').checked;
-            const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
-            
-            const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse;
-            const hasReqIdFilter = filterReqId !== '';
-            const hasContentFilter = filterContent !== '';
-            
-            if (!hasCheckboxFilter && !hasReqIdFilter && !hasContentFilter) {
-                filteredEntries = logEntries;
-            } else {
-                filteredEntries = logEntries.filter(entry => {
-                    if (hasReqIdFilter) {
-                        if (!entry.json || !entry.json.reqId || !entry.json.reqId.includes(filterReqId)) {
-                            return false;
-                        }
-                    }
-                    
-                    if (hasContentFilter) {
-                        if (!entry.raw.toLowerCase().includes(filterContent)) {
-                            return false;
-                        }
-                    }
-                    
-                    if (hasCheckboxFilter) {
-                        if (!entry.json) return false;
-                        const hasType = filterType && entry.json.type;
-                        const hasMsg = filterMsg && entry.json.msg;
-                        const hasRequestBody = filterRequestBody && entry.json.type === 'request body';
-                        const hasOriginalResponse = filterOriginalResponse && (entry.json.tppe === 'Original Response' || entry.json.type === 'Original Response');
-                        return hasType || hasMsg || hasRequestBody || hasOriginalResponse;
-                    }
-                    
-                    return true;
-                });
+            if (filterDebounceTimer) {
+                clearTimeout(filterDebounceTimer);
             }
+            filterDebounceTimer = setTimeout(applyFiltersImmediate, FILTER_DEBOUNCE_MS);
+        }
+
+        function applyFiltersImmediate() {
+            const contentBody = document.getElementById('contentBody');
+            contentBody.innerHTML = '<div class="loading"></div>';
             
-            renderLogEntries(filteredEntries);
+            requestAnimationFrame(() => {
+                const filterReqId = document.getElementById('filterReqId').value.trim();
+                const filterContent = document.getElementById('filterContent').value.trim().toLowerCase();
+                const filterType = document.getElementById('filterType').checked;
+                const filterMsg = document.getElementById('filterMsg').checked;
+                const filterRequestBody = document.getElementById('filterRequestBody').checked;
+                const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
+                
+                const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse;
+                const hasReqIdFilter = filterReqId !== '';
+                const hasContentFilter = filterContent !== '';
+                
+                if (!hasCheckboxFilter && !hasReqIdFilter && !hasContentFilter) {
+                    filteredEntries = logEntries;
+                } else {
+                    filteredEntries = logEntries.filter(entry => {
+                        if (hasReqIdFilter) {
+                            if (!entry.json || !entry.json.reqId || !entry.json.reqId.includes(filterReqId)) {
+                                return false;
+                            }
+                        }
+                        
+                        if (hasContentFilter) {
+                            if (!entry.raw.toLowerCase().includes(filterContent)) {
+                                return false;
+                            }
+                        }
+                        
+                        if (hasCheckboxFilter) {
+                            if (!entry.json) return false;
+                            const hasType = filterType && entry.json.type;
+                            const hasMsg = filterMsg && entry.json.msg;
+                            const hasRequestBody = filterRequestBody && entry.json.type === 'request body';
+                            const hasOriginalResponse = filterOriginalResponse && (entry.json.tppe === 'Original Response' || entry.json.type === 'Original Response');
+                            return hasType || hasMsg || hasRequestBody || hasOriginalResponse;
+                        }
+                        
+                        return true;
+                    });
+                }
+                
+                renderLogEntries(filteredEntries);
+            });
         }
 
         function renderLogEntries(entries) {
@@ -901,81 +928,170 @@
                 return;
             }
 
-            const html = entries.map(entry => {
-                if (entry.json) {
-                    const levelClass = getLevelClass(entry.json.level);
-                    const levelText = getLevelText(entry.json.level);
-                    const time = formatLogTime(entry.json.time);
-                    const reqId = escapeHtml(getReqId(entry.json));
-                    const logType = escapeHtml(getLogType(entry.json));
-                    const logTppe = escapeHtml(getLogTppe(entry.json));
-                    const reqUrl = escapeHtml(getReqUrl(entry.json));
-                    const msg = escapeHtml(getSummaryMessage(entry.json));
-                    const jsonHtml = formatJson(entry.json);
-                    
-                    return `
-                        <div class="log-entry" data-index="${entry.index}">
-                            <div class="log-summary" onclick="toggleEntry(${entry.index})">
-                                <span class="log-toggle">▶</span>
-                                <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制 JSON">📋</span>
-                                <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整 JSON">⧉</span>
-                                <span class="log-line-num">${entry.index}</span>
-                                <span class="log-time">${time}</span>
-                                <span class="log-level ${levelClass}">${levelText}</span>
-                                <span class="log-reqid">${reqId}</span>
-                                <span class="log-type">${logType}</span>
-                                <span class="log-tppe">${logTppe}</span>
-                                <span class="log-url">${reqUrl}</span>
-                                <span class="log-msg">${msg}</span>
-                            </div>
-                            <div class="log-detail">
-                                <pre class="json-view">${jsonHtml}</pre>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    return `
-                        <div class="log-entry" data-index="${entry.index}">
-                            <div class="log-summary" onclick="toggleEntry(${entry.index})">
-                                <span class="log-toggle">▶</span>
-                                <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制内容">📋</span>
-                                <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整内容">⧉</span>
-                                <span class="log-line-num">${entry.index}</span>
-                                <span class="log-time">--:--:-- ---</span>
-                                <span class="log-level debug">RAW</span>
-                                <span class="log-reqid"></span>
-                                <span class="log-type"></span>
-                                <span class="log-tppe"></span>
-                                <span class="log-url">${reqUrl}</span>
-                                <span class="log-msg">${escapeHtml(entry.raw.substring(0, 100))}</span>
-                            </div>
-                            <div class="log-detail">
-                                <pre class="json-view">${escapeHtml(entry.raw)}</pre>
-                            </div>
-                        </div>
-                    `;
-                }
-            }).join('');
+            const totalHeight = entries.length * VIRTUAL_SCROLL_CONFIG.itemHeight;
+            contentBody.innerHTML = `
+                <div class="virtual-scroll-container" style="height: ${totalHeight}px; position: relative;">
+                    <div class="log-list" id="virtualLogList"></div>
+                </div>
+            `;
+            
+            virtualScrollState.containerHeight = contentBody.clientHeight;
+            virtualScrollState.scrollTop = 0;
+            virtualScrollState.startIndex = -1;
+            virtualScrollState.endIndex = -1;
+            
+            contentBody.onscroll = handleVirtualScroll;
+            contentBody.scrollTop = 0;
+            
+            renderVisibleItems();
+        }
 
-            contentBody.innerHTML = `<div class="log-list">${html}</div>`;
+        function handleVirtualScroll() {
+            if (virtualScrollState.isRendering) return;
+            
+            const contentBody = document.getElementById('contentBody');
+            virtualScrollState.scrollTop = contentBody.scrollTop;
+            virtualScrollState.containerHeight = contentBody.clientHeight;
+            
+            requestAnimationFrame(renderVisibleItems);
+        }
+
+        function renderVisibleItems() {
+            virtualScrollState.isRendering = true;
+            
+            const { itemHeight, bufferSize } = VIRTUAL_SCROLL_CONFIG;
+            const { scrollTop, containerHeight } = virtualScrollState;
+            const entries = filteredEntries;
+            
+            const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - bufferSize);
+            const visibleCount = Math.ceil(containerHeight / itemHeight);
+            const endIndex = Math.min(entries.length, startIndex + visibleCount + bufferSize * 2);
+            
+            if (startIndex === virtualScrollState.startIndex && endIndex === virtualScrollState.endIndex) {
+                virtualScrollState.isRendering = false;
+                return;
+            }
+            
+            virtualScrollState.startIndex = startIndex;
+            virtualScrollState.endIndex = endIndex;
+            
+            const logList = document.getElementById('virtualLogList');
+            if (!logList) {
+                virtualScrollState.isRendering = false;
+                return;
+            }
+            
+            const visibleEntries = entries.slice(startIndex, endIndex);
+            const html = visibleEntries.map((entry, idx) => {
+                const actualIndex = startIndex + idx;
+                const top = actualIndex * itemHeight;
+                return renderLogEntry(entry, top);
+            }).join('');
+            
+            logList.innerHTML = html;
+            virtualScrollState.isRendering = false;
+        }
+
+        function renderLogEntry(entry, top) {
+            if (entry.json) {
+                const levelClass = getLevelClass(entry.json.level);
+                const levelText = getLevelText(entry.json.level);
+                const time = formatLogTime(entry.json.time);
+                const reqId = escapeHtml(getReqId(entry.json));
+                const logType = escapeHtml(getLogType(entry.json));
+                const logTppe = escapeHtml(getLogTppe(entry.json));
+                const reqUrl = escapeHtml(getReqUrl(entry.json));
+                const msg = escapeHtml(getSummaryMessage(entry.json));
+                
+                return `
+                    <div class="log-entry" data-index="${entry.index}" style="position: absolute; top: ${top}px; left: 0; right: 0;">
+                        <div class="log-summary" onclick="toggleEntry(${entry.index})">
+                            <span class="log-toggle">▶</span>
+                            <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制 JSON">📋</span>
+                            <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整 JSON">⧉</span>
+                            <span class="log-line-num">${entry.index}</span>
+                            <span class="log-time">${time}</span>
+                            <span class="log-level ${levelClass}">${levelText}</span>
+                            <span class="log-reqid">${reqId}</span>
+                            <span class="log-type">${logType}</span>
+                            <span class="log-tppe">${logTppe}</span>
+                            <span class="log-url">${reqUrl}</span>
+                            <span class="log-msg">${msg}</span>
+                        </div>
+                        <div class="log-detail">
+                            <pre class="json-view"></pre>
+                        </div>
+                    </div>
+                `;
+            } else {
+                return `
+                    <div class="log-entry" data-index="${entry.index}" style="position: absolute; top: ${top}px; left: 0; right: 0;">
+                        <div class="log-summary" onclick="toggleEntry(${entry.index})">
+                            <span class="log-toggle">▶</span>
+                            <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制内容">📋</span>
+                            <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整内容">⧉</span>
+                            <span class="log-line-num">${entry.index}</span>
+                            <span class="log-time">--:--:-- ---</span>
+                            <span class="log-level debug">RAW</span>
+                            <span class="log-reqid"></span>
+                            <span class="log-type"></span>
+                            <span class="log-tppe"></span>
+                            <span class="log-url"></span>
+                            <span class="log-msg">${escapeHtml(entry.raw.substring(0, 100))}</span>
+                        </div>
+                        <div class="log-detail">
+                            <pre class="json-view"></pre>
+                        </div>
+                    </div>
+                `;
+            }
         }
 
         function toggleEntry(index) {
-            const entry = document.querySelector(`.log-entry[data-index="${index}"]`);
-            if (entry) {
-                entry.classList.toggle('expanded');
+            const entryEl = document.querySelector(`.log-entry[data-index="${index}"]`);
+            if (entryEl) {
+                const isExpanding = !entryEl.classList.contains('expanded');
+                entryEl.classList.toggle('expanded');
+                
+                if (isExpanding) {
+                    const jsonView = entryEl.querySelector('.json-view');
+                    if (jsonView && !jsonView.dataset.loaded) {
+                        const entry = logEntries.find(e => e.index === index);
+                        if (entry) {
+                            if (entry.json) {
+                                jsonView.innerHTML = formatJson(entry.json);
+                            } else {
+                                jsonView.textContent = entry.raw;
+                            }
+                            jsonView.dataset.loaded = 'true';
+                        }
+                    }
+                }
             }
         }
 
         function expandAll() {
-            document.querySelectorAll('.log-entry').forEach(entry => {
-                entry.classList.add('expanded');
+            document.querySelectorAll('.log-entry').forEach(entryEl => {
+                entryEl.classList.add('expanded');
+                const jsonView = entryEl.querySelector('.json-view');
+                if (jsonView && !jsonView.dataset.loaded) {
+                    const index = parseInt(entryEl.dataset.index);
+                    const entry = logEntries.find(e => e.index === index);
+                    if (entry) {
+                        if (entry.json) {
+                            jsonView.innerHTML = formatJson(entry.json);
+                        } else {
+                            jsonView.textContent = entry.raw;
+                        }
+                        jsonView.dataset.loaded = 'true';
+                    }
+                }
             });
         }
 
         function collapseAll() {
-            document.querySelectorAll('.log-entry').forEach(entry => {
-                entry.classList.remove('expanded');
+            document.querySelectorAll('.log-entry').forEach(entryEl => {
+                entryEl.classList.remove('expanded');
             });
         }
 
