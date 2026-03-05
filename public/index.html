@@ -228,10 +228,15 @@
 
         .log-entry {
             border-bottom: 1px solid #e8e8e8;
+            background-color: #ffffff;
         }
 
         .log-entry:last-child {
             border-bottom: none;
+        }
+
+        .log-entry.expanded {
+            z-index: 50;
         }
 
         .log-summary {
@@ -360,6 +365,10 @@
             text-align: center;
         }
 
+        .log-level:empty {
+            display: none;
+        }
+
         .log-level.info {
             background-color: #e3f2fd;
             color: #1565c0;
@@ -440,6 +449,20 @@
             display: none;
         }
 
+        .log-body-size {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background-color: #f5f5f5;
+            color: #666666;
+            flex-shrink: 0;
+        }
+
+        .log-body-size:empty {
+            display: none;
+        }
+
         .log-msg {
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 12px;
@@ -459,6 +482,7 @@
 
         .log-entry.expanded .log-detail {
             display: block;
+            overflow: auto;
         }
 
         .json-view {
@@ -713,8 +737,15 @@
             endIndex: 0,
             isRendering: false
         };
+        let expandedDetailHeight = 0;
+        const expandedEntries = new Set();
+        let currentEntriesIndexMap = new Map();
         let filterDebounceTimer = null;
         const FILTER_DEBOUNCE_MS = 150;
+
+        function getExpandedMaxHeight() {
+            return Math.max(160, Math.floor(virtualScrollState.containerHeight * 0.7));
+        }
 
         function formatFileSize(bytes) {
             if (bytes < 1024) return bytes + ' B';
@@ -755,6 +786,7 @@
         }
 
         function getLevelClass(level) {
+            if (typeof level !== 'number' || !Number.isFinite(level)) return '';
             if (level <= 20) return 'debug';
             if (level <= 30) return 'info';
             if (level <= 40) return 'warn';
@@ -762,6 +794,7 @@
         }
 
         function getLevelText(level) {
+            if (typeof level !== 'number' || !Number.isFinite(level)) return '';
             if (level <= 20) return 'DEBUG';
             if (level <= 30) return 'INFO';
             if (level <= 40) return 'WARN';
@@ -825,11 +858,32 @@
         }
 
         function getReqId(json) {
-            return json.reqId || '';
+            return json.reqId || json.id || '';
         }
 
         function getReqUrl(json) {
-            return (json.req && json.req.url) ? json.req.url : '';
+            return json.url || ((json.req && json.req.url) ? json.req.url : '');
+        }
+
+        function getReqMethod(json) {
+            return json.method || (json.req && json.req.method) || '';
+        }
+
+        function stripProxyPrefix(url) {
+            const prefix = '/claude/proxy';
+            if (typeof url !== 'string') return '';
+            if (url.startsWith(prefix)) {
+                const rest = url.slice(prefix.length);
+                if (!rest) return '/';
+                return rest.startsWith('/') ? rest : `/${rest}`;
+            }
+            return url;
+        }
+
+        function getBodySize(json) {
+            const size = json && json.body && typeof json.body.size === 'number' ? json.body.size : null;
+            if (typeof size === 'number' && Number.isFinite(size)) return size;
+            return null;
         }
 
         function getSummaryMessage(json) {
@@ -933,7 +987,12 @@
                 return;
             }
 
-            const totalHeight = entries.length * VIRTUAL_SCROLL_CONFIG.itemHeight;
+            currentEntriesIndexMap = new Map();
+            entries.forEach((e, i) => currentEntriesIndexMap.set(e.index, i));
+            const expandedIdx = expandedEntries.size ? Array.from(expandedEntries)[0] : null;
+            const expandedPos = expandedIdx === null ? null : currentEntriesIndexMap.get(expandedIdx);
+            const extraHeight = typeof expandedPos === 'number' ? expandedDetailHeight : 0;
+            const totalHeight = entries.length * VIRTUAL_SCROLL_CONFIG.itemHeight + extraHeight;
             contentBody.innerHTML = `
                 <div class="virtual-scroll-container" style="height: ${totalHeight}px; position: relative;">
                     <div class="log-list" id="virtualLogList"></div>
@@ -967,18 +1026,29 @@
             const { itemHeight, bufferSize } = VIRTUAL_SCROLL_CONFIG;
             const { scrollTop, containerHeight } = virtualScrollState;
             const entries = filteredEntries;
+
+            const expandedIdx = expandedEntries.size ? Array.from(expandedEntries)[0] : null;
+            const expandedPos = expandedIdx === null ? null : currentEntriesIndexMap.get(expandedIdx);
+            const extraHeight = typeof expandedPos === 'number' ? expandedDetailHeight : 0;
+            const totalHeight = entries.length * itemHeight + extraHeight;
+            const container = document.querySelector('.virtual-scroll-container');
+            if (container) {
+                container.style.height = `${totalHeight}px`;
+            }
             
             const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - bufferSize);
             const visibleCount = Math.ceil(containerHeight / itemHeight);
             const endIndex = Math.min(entries.length, startIndex + visibleCount + bufferSize * 2);
+            const expandedKey = expandedPos === null ? '' : `${expandedPos}:${expandedDetailHeight}`;
             
-            if (startIndex === virtualScrollState.startIndex && endIndex === virtualScrollState.endIndex) {
+            if (startIndex === virtualScrollState.startIndex && endIndex === virtualScrollState.endIndex && expandedKey === virtualScrollState.expandedKey) {
                 virtualScrollState.isRendering = false;
                 return;
             }
             
             virtualScrollState.startIndex = startIndex;
             virtualScrollState.endIndex = endIndex;
+            virtualScrollState.expandedKey = expandedKey;
             
             const logList = document.getElementById('virtualLogList');
             if (!logList) {
@@ -989,7 +1059,7 @@
             const visibleEntries = entries.slice(startIndex, endIndex);
             const html = visibleEntries.map((entry, idx) => {
                 const actualIndex = startIndex + idx;
-                const top = actualIndex * itemHeight;
+                const top = actualIndex * itemHeight + (expandedPos !== null && expandedPos < actualIndex ? expandedDetailHeight : 0);
                 return renderLogEntry(entry, top);
             }).join('');
             
@@ -999,17 +1069,23 @@
 
         function renderLogEntry(entry, top) {
             if (entry.json) {
+                const expandedClass = expandedEntries.has(entry.index) ? 'expanded' : '';
+                const detailStyle = expandedClass ? `style="max-height: ${expandedDetailHeight}px; overflow: auto;"` : '';
+                const detailContent = expandedClass ? formatJson(entry.json) : '';
                 const levelClass = getLevelClass(entry.json.level);
                 const levelText = getLevelText(entry.json.level);
                 const time = formatLogTime(entry.json.time);
                 const reqId = escapeHtml(getReqId(entry.json));
                 const logType = escapeHtml(getLogType(entry.json));
                 const logTppe = escapeHtml(getLogTppe(entry.json));
-                const reqUrl = escapeHtml(getReqUrl(entry.json));
+                const method = escapeHtml(getReqMethod(entry.json));
+                const reqUrl = escapeHtml(stripProxyPrefix(getReqUrl(entry.json)));
                 const msg = escapeHtml(getSummaryMessage(entry.json));
+                const bodySize = getBodySize(entry.json);
+                const bodySizeText = bodySize === null ? '' : formatFileSize(bodySize);
                 
                 return `
-                    <div class="log-entry" data-index="${entry.index}" style="position: absolute; top: ${top}px; left: 0; right: 0;">
+                    <div class="log-entry ${expandedClass}" data-index="${entry.index}" style="position: absolute; top: ${top}px; left: 0; right: 0;">
                         <div class="log-summary" onclick="toggleEntry(${entry.index})">
                             <span class="log-toggle">▶</span>
                             <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制 JSON">📋</span>
@@ -1020,17 +1096,21 @@
                             <span class="log-reqid">${reqId}</span>
                             <span class="log-type">${logType}</span>
                             <span class="log-tppe">${logTppe}</span>
-                            <span class="log-url">${reqUrl}</span>
+                            <span class="log-url">${method ? `${method} ${reqUrl}` : reqUrl}</span>
+                            <span class="log-body-size">${bodySizeText}</span>
                             <span class="log-msg">${msg}</span>
                         </div>
-                        <div class="log-detail">
-                            <pre class="json-view"></pre>
+                        <div class="log-detail" ${detailStyle}>
+                            <pre class="json-view">${detailContent}</pre>
                         </div>
                     </div>
                 `;
             } else {
+                const expandedClass = expandedEntries.has(entry.index) ? 'expanded' : '';
+                const detailStyle = expandedClass ? `style="max-height: ${expandedDetailHeight}px; overflow: auto;"` : '';
+                const detailContent = expandedClass ? escapeHtml(entry.raw) : '';
                 return `
-                    <div class="log-entry" data-index="${entry.index}" style="position: absolute; top: ${top}px; left: 0; right: 0;">
+                    <div class="log-entry ${expandedClass}" data-index="${entry.index}" style="position: absolute; top: ${top}px; left: 0; right: 0;">
                         <div class="log-summary" onclick="toggleEntry(${entry.index})">
                             <span class="log-toggle">▶</span>
                             <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制内容">📋</span>
@@ -1044,8 +1124,8 @@
                             <span class="log-url"></span>
                             <span class="log-msg">${escapeHtml(entry.raw.substring(0, 100))}</span>
                         </div>
-                        <div class="log-detail">
-                            <pre class="json-view"></pre>
+                        <div class="log-detail" ${detailStyle}>
+                            <pre class="json-view">${detailContent}</pre>
                         </div>
                     </div>
                 `;
@@ -1053,51 +1133,60 @@
         }
 
         function toggleEntry(index) {
-            const entryEl = document.querySelector(`.log-entry[data-index="${index}"]`);
-            if (entryEl) {
-                const isExpanding = !entryEl.classList.contains('expanded');
-                entryEl.classList.toggle('expanded');
-                
-                if (isExpanding) {
-                    const jsonView = entryEl.querySelector('.json-view');
-                    if (jsonView && !jsonView.dataset.loaded) {
-                        const entry = logEntries.find(e => e.index === index);
-                        if (entry) {
-                            if (entry.json) {
-                                jsonView.innerHTML = formatJson(entry.json);
-                            } else {
-                                jsonView.textContent = entry.raw;
-                            }
-                            jsonView.dataset.loaded = 'true';
-                        }
-                    }
-                }
+            if (expandedEntries.has(index)) {
+                expandedEntries.delete(index);
+                expandedDetailHeight = 0;
+            } else {
+                expandedEntries.clear();
+                expandedEntries.add(index);
+                expandedDetailHeight = 0;
             }
+
+            renderVisibleItems();
+
+            requestAnimationFrame(() => {
+                const entryEl = document.querySelector(`.log-entry[data-index="${index}"]`);
+                if (!entryEl || !expandedEntries.has(index)) return;
+                requestAnimationFrame(() => {
+                    const detail = entryEl.querySelector('.log-detail');
+                    if (!detail || !expandedEntries.has(index)) return;
+                    const maxHeight = getExpandedMaxHeight();
+                    const h = Math.min(detail.scrollHeight, maxHeight);
+                    if (h !== expandedDetailHeight) {
+                        expandedDetailHeight = h;
+                        renderVisibleItems();
+                    }
+                });
+            });
         }
 
         function expandAll() {
-            document.querySelectorAll('.log-entry').forEach(entryEl => {
-                entryEl.classList.add('expanded');
-                const jsonView = entryEl.querySelector('.json-view');
-                if (jsonView && !jsonView.dataset.loaded) {
-                    const index = parseInt(entryEl.dataset.index);
-                    const entry = logEntries.find(e => e.index === index);
-                    if (entry) {
-                        if (entry.json) {
-                            jsonView.innerHTML = formatJson(entry.json);
-                        } else {
-                            jsonView.textContent = entry.raw;
-                        }
-                        jsonView.dataset.loaded = 'true';
+            expandedEntries.clear();
+            if (filteredEntries.length > 0) {
+                expandedEntries.add(filteredEntries[0].index);
+            }
+            expandedDetailHeight = 0;
+            renderVisibleItems();
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    const entryEl = document.querySelector('.log-entry.expanded');
+                    if (!entryEl) return;
+                    const detail = entryEl.querySelector('.log-detail');
+                    if (!detail) return;
+                    const maxHeight = getExpandedMaxHeight();
+                    const h = Math.min(detail.scrollHeight, maxHeight);
+                    if (h !== expandedDetailHeight) {
+                        expandedDetailHeight = h;
+                        renderVisibleItems();
                     }
-                }
+                });
             });
         }
 
         function collapseAll() {
-            document.querySelectorAll('.log-entry').forEach(entryEl => {
-                entryEl.classList.remove('expanded');
-            });
+            expandedEntries.clear();
+            expandedDetailHeight = 0;
+            renderVisibleItems();
         }
 
         function showToast(message) {
@@ -1343,6 +1432,9 @@
                 
                 const data = await response.json();
                 logEntries = parseLogContent(data.content);
+                expandedEntries.clear();
+                expandedDetailHeight = 0;
+                virtualScrollState.expandedKey = '';
                 document.getElementById('filterReqId').value = '';
                 document.getElementById('filterContent').value = '';
                 document.getElementById('filterType').checked = false;
