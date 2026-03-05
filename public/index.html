@@ -149,6 +149,11 @@
             color: #e65100;
         }
 
+        .file-source.proxy {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+
         .main-content {
             flex: 1;
             display: flex;
@@ -1310,7 +1315,7 @@
                      onclick="selectFile('${file.name}', '${file.source}')">
                     <div class="file-date">
                         ${formatDateFromFilename(file.name)}
-                        <span class="file-source ${file.source}">${file.source === 'upload' ? '上传' : '系统'}</span>
+                        <span class="file-source ${file.source}">${file.source === 'upload' ? '上传' : (file.source === 'proxy' ? 'Proxy' : '系统')}</span>
                     </div>
                     <div class="file-meta">
                         <span class="file-name-text">${file.name}</span>

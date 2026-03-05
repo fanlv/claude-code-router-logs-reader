@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
@@ -13,10 +14,33 @@ const wss = new WebSocket.Server({ server });
 
 const LOG_DIR = path.join(os.homedir(), '.claude-code-router/logs');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const PROXY_TARGET = process.env.CLAUDE_PROXY_TARGET;
+const PROXY_LOG_DIR = process.env.CLAUDE_PROXY_LOG_DIR || UPLOAD_DIR;
 
+if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+}
 if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
+
+function resolveProxyLogDir() {
+    const candidates = [PROXY_LOG_DIR, UPLOAD_DIR];
+    for (const dir of candidates) {
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+            const testPath = path.join(dir, '.__claude_proxy_write_test');
+            const fd = fs.openSync(testPath, 'a');
+            fs.closeSync(fd);
+            fs.unlinkSync(testPath);
+            return dir;
+        } catch (e) {
+        }
+    }
+    return UPLOAD_DIR;
+}
+
+const PROXY_LOG_DIR_RESOLVED = resolveProxyLogDir();
 
 function decodeFilename(filename) {
     try {
@@ -49,7 +73,377 @@ const upload = multer({
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/claude/proxy', express.raw({ type: '*/*', limit: '50mb' }));
 app.use(express.json());
+
+function redactHeaders(headers) {
+    const redacted = {};
+    const sensitive = new Set([
+        'authorization',
+        'proxy-authorization',
+        'x-api-key',
+        'api-key',
+        'x-api-token',
+        'x-auth-token'
+    ]);
+    Object.entries(headers || {}).forEach(([key, value]) => {
+        if (sensitive.has(key.toLowerCase())) {
+            redacted[key] = '[REDACTED]';
+        } else {
+            redacted[key] = value;
+        }
+    });
+    return redacted;
+}
+
+function redactJson(value) {
+    if (Array.isArray(value)) {
+        return value.map(item => redactJson(item));
+    }
+    if (value && typeof value === 'object') {
+        const result = {};
+        Object.entries(value).forEach(([key, val]) => {
+            const lower = key.toLowerCase();
+            if (['api_key', 'apikey', 'token', 'secret', 'authorization', 'access_token', 'refresh_token'].includes(lower)) {
+                result[key] = '[REDACTED]';
+            } else {
+                result[key] = redactJson(val);
+            }
+        });
+        return result;
+    }
+    return value;
+}
+
+function serializeBody(buffer, contentType) {
+    if (!buffer || buffer.length === 0) {
+        return null;
+    }
+    const ct = (contentType || '').toLowerCase();
+    const isJson = ct.includes('application/json') || ct.includes('+json');
+    const isText =
+        ct.startsWith('text/') ||
+        ct.includes('text/event-stream') ||
+        ct.includes('application/x-ndjson') ||
+        ct.includes('application/xml') ||
+        ct.includes('application/xhtml+xml') ||
+        ct.includes('application/x-www-form-urlencoded');
+
+    if (isJson) {
+        const text = buffer.toString('utf8');
+        try {
+            const json = JSON.parse(text);
+            return { type: 'json', size: buffer.length, value: redactJson(json) };
+        } catch (e) {
+            return { type: 'text', size: buffer.length, value: text };
+        }
+    }
+    if (isText) {
+        const text = buffer.toString('utf8');
+        const limit = Number.parseInt(process.env.CLAUDE_PROXY_LOG_TEXT_LIMIT || '200000', 10);
+        if (Number.isFinite(limit) && limit > 0 && text.length > limit) {
+            return { type: 'text', size: buffer.length, truncated: true, value: text.slice(0, limit) };
+        }
+        return { type: 'text', size: buffer.length, value: text };
+    }
+    const text = buffer.toString('utf8');
+    const limit = Number.parseInt(process.env.CLAUDE_PROXY_LOG_TEXT_LIMIT || '200000', 10);
+    if (Number.isFinite(limit) && limit > 0 && text.length > limit) {
+        return { type: 'text', size: buffer.length, truncated: true, value: text.slice(0, limit) };
+    }
+    return { type: 'text', size: buffer.length, value: text };
+}
+
+function appendJsonl(filePath, record) {
+    fs.appendFile(filePath, JSON.stringify(record) + '\n', (error) => {
+        if (error) {
+            console.error('Error writing proxy log:', error);
+        }
+    });
+}
+
+function formatUtc8Hour(date) {
+    const d = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}-${hh}`;
+}
+
+function sanitizeForFilename(value) {
+    return String(value || '')
+        .replace(/\s+/g, '')
+        .replace(/[^0-9a-zA-Z._-]/g, '_')
+        .slice(0, 200) || 'unknown';
+}
+
+function getClientIp(req) {
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+        return xff.split(',')[0].trim();
+    }
+    const xri = req.headers['x-real-ip'];
+    if (typeof xri === 'string' && xri.trim()) {
+        return xri.trim();
+    }
+    const remote = req.socket && req.socket.remoteAddress;
+    if (typeof remote === 'string' && remote.trim()) {
+        return remote.startsWith('::ffff:') ? remote.slice(7) : remote;
+    }
+    return 'unknown';
+}
+
+function buildTargetUrl(req) {
+    const prefix = '/claude/proxy';
+    let pathWithQuery = req.originalUrl.startsWith(prefix)
+        ? req.originalUrl.slice(prefix.length)
+        : req.originalUrl;
+    if (pathWithQuery === '') {
+        pathWithQuery = '/';
+    }
+    if (!pathWithQuery.startsWith('/')) {
+        pathWithQuery = `/${pathWithQuery}`;
+    }
+    return new URL(pathWithQuery, PROXY_TARGET);
+}
+
+function getRequestBodyBuffer(req) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && (!req.headers['content-length'] || req.headers['content-length'] === '0')) {
+        return Buffer.alloc(0);
+    }
+    if (req.body !== undefined) {
+        if (Buffer.isBuffer(req.body)) {
+            return req.body;
+        }
+        if (typeof req.body === 'string') {
+            return Buffer.from(req.body);
+        }
+        return Buffer.from(JSON.stringify(req.body));
+    }
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+    });
+}
+
+function parseSseText(text) {
+    const normalized = String(text || '').replace(/\r\n/g, '\n');
+    const blocks = normalized.split('\n\n').filter(b => b.trim());
+    const events = [];
+
+    for (const block of blocks) {
+        const lines = block.split('\n').filter(l => l.trim() && !l.startsWith(':'));
+        let event;
+        let id;
+        let retry;
+        const dataLines = [];
+
+        for (const line of lines) {
+            const idx = line.indexOf(':');
+            if (idx === -1) {
+                continue;
+            }
+            const field = line.slice(0, idx).trim();
+            let value = line.slice(idx + 1);
+            if (value.startsWith(' ')) {
+                value = value.slice(1);
+            }
+            if (field === 'event') {
+                event = value;
+            } else if (field === 'data') {
+                dataLines.push(value);
+            } else if (field === 'id') {
+                id = value;
+            } else if (field === 'retry') {
+                const n = Number.parseInt(value, 10);
+                retry = Number.isFinite(n) ? n : value;
+            }
+        }
+
+        if (!event && dataLines.length === 0 && id === undefined && retry === undefined) {
+            continue;
+        }
+
+        const dataText = dataLines.join('\n');
+        let data = dataText;
+        if (dataText && dataText !== '[DONE]') {
+            try {
+                data = JSON.parse(dataText);
+            } catch (e) {
+            }
+        }
+
+        const evt = { event, data };
+        if (id !== undefined) {
+            evt.id = id;
+        }
+        if (retry !== undefined) {
+            evt.retry = retry;
+        }
+        events.push(evt);
+    }
+
+    return { type: 'sse', events };
+}
+
+function formatLoggedBody(entry) {
+    if (!entry || !entry.body) {
+        return entry;
+    }
+    const headers = entry.headers || {};
+    const ct = String(headers['content-type'] || headers['Content-Type'] || '').toLowerCase();
+    const isJson = ct.includes('application/json') || ct.includes('+json');
+    const isSse = ct.includes('text/event-stream');
+
+    if (entry.body.type === 'base64' && typeof entry.body.value === 'string') {
+        try {
+            const text = Buffer.from(entry.body.value, 'base64').toString('utf8');
+            const limit = Number.parseInt(process.env.CLAUDE_PROXY_LOG_TEXT_LIMIT || '200000', 10);
+            const truncated = Number.isFinite(limit) && limit > 0 && text.length > limit;
+            const textBody = truncated
+                ? { type: 'text', size: entry.body.size, decodedFrom: 'base64', truncated: true, value: text.slice(0, limit) }
+                : { type: 'text', size: entry.body.size, decodedFrom: 'base64', value: text };
+
+            let nextEntry = { ...entry, body: textBody };
+            if (isSse) {
+                const parsed = parseSseText(textBody.value);
+                nextEntry.body = { ...parsed, size: entry.body.size, decodedFrom: 'base64', truncated: textBody.truncated };
+                return nextEntry;
+            }
+            if (isJson) {
+                try {
+                    const json = JSON.parse(textBody.value);
+                    nextEntry.body = { type: 'json', size: entry.body.size, decodedFrom: 'base64', truncated: textBody.truncated, value: redactJson(json) };
+                } catch (e) {
+                }
+            }
+            return nextEntry;
+        } catch (e) {
+            return entry;
+        }
+    }
+
+    if (entry.body.type === 'text' && typeof entry.body.value === 'string') {
+        if (isSse) {
+            const parsed = parseSseText(entry.body.value);
+            return { ...entry, body: { ...parsed, size: entry.body.size, truncated: entry.body.truncated } };
+        }
+        if (isJson) {
+            try {
+                const json = JSON.parse(entry.body.value);
+                return { ...entry, body: { type: 'json', size: entry.body.size, truncated: entry.body.truncated, value: redactJson(json) } };
+            } catch (e) {
+            }
+        }
+    }
+
+    return entry;
+}
+
+function generateRequestId() {
+    try {
+        const { randomUUID } = require('crypto');
+        return randomUUID();
+    } catch (e) {
+        return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+}
+
+app.all('/claude/proxy*', async (req, res) => {
+    const requestId = generateRequestId();
+    const start = Date.now();
+    const clientIp = getClientIp(req);
+    const logHour = formatUtc8Hour(new Date());
+    const logFilePath = path.join(PROXY_LOG_DIR_RESOLVED, `claude-${sanitizeForFilename(clientIp)}-${logHour}.log`);
+    const targetUrl = buildTargetUrl(req);
+    const bodyBuffer = await getRequestBodyBuffer(req);
+    const headers = { ...req.headers };
+    delete headers.host;
+    delete headers['content-length'];
+    headers['accept-encoding'] = 'identity';
+    if (bodyBuffer && bodyBuffer.length > 0) {
+        headers['content-length'] = Buffer.byteLength(bodyBuffer);
+    }
+    const options = {
+        protocol: targetUrl.protocol,
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+        method: req.method,
+        path: `${targetUrl.pathname}${targetUrl.search}`,
+        headers
+    };
+
+    appendJsonl(logFilePath, {
+        type: 'request',
+        id: requestId,
+        time: new Date().toISOString(),
+        clientIp,
+        method: req.method,
+        url: req.originalUrl,
+        target: targetUrl.toString(),
+        headers: redactHeaders(req.headers),
+        body: serializeBody(bodyBuffer, req.headers['content-type'])
+    });
+
+    const client = targetUrl.protocol === 'https:' ? https : http;
+    const proxyReq = client.request(options, (proxyRes) => {
+        const responseChunks = [];
+        res.status(proxyRes.statusCode || 502);
+        Object.entries(proxyRes.headers || {}).forEach(([key, value]) => {
+            if (value !== undefined) {
+                res.setHeader(key, value);
+            }
+        });
+        proxyRes.on('data', chunk => {
+            responseChunks.push(chunk);
+            res.write(chunk);
+        });
+        proxyRes.on('end', () => {
+            res.end();
+            const responseBuffer = Buffer.concat(responseChunks);
+            appendJsonl(logFilePath, {
+                type: 'response',
+                id: requestId,
+                time: new Date().toISOString(),
+                durationMs: Date.now() - start,
+                status: proxyRes.statusCode,
+                headers: redactHeaders(proxyRes.headers || {}),
+                body: serializeBody(responseBuffer, proxyRes.headers && proxyRes.headers['content-type'])
+            });
+        });
+    });
+
+    proxyReq.on('error', (error) => {
+        appendJsonl(logFilePath, {
+            type: 'response',
+            id: requestId,
+            time: new Date().toISOString(),
+            durationMs: Date.now() - start,
+            status: 502,
+            error: { message: error.message }
+        });
+        res.status(502).json({ error: 'Proxy request failed', message: error.message });
+    });
+
+    if (bodyBuffer && bodyBuffer.length > 0) {
+        proxyReq.write(bodyBuffer);
+    }
+    proxyReq.end();
+});
+
+function isProxyLogFilename(name) {
+    return /^claude-.*\.log$/i.test(name);
+}
+
+function getUploadDirSourceForFilename(name) {
+    if (PROXY_LOG_DIR_RESOLVED === UPLOAD_DIR && isProxyLogFilename(name)) {
+        return 'proxy';
+    }
+    return 'upload';
+}
 
 function getLogFiles() {
     const files = [];
@@ -87,7 +481,7 @@ function getLogFiles() {
                         path: filePath,
                         size: stats.size,
                         mtime: stats.mtime.toISOString(),
-                        source: 'upload'
+                        source: getUploadDirSourceForFilename(file)
                     };
                 });
             files.push(...uploadFiles);
@@ -104,6 +498,8 @@ function getFileContent(filename, source) {
         let filePath;
         if (source === 'upload') {
             filePath = path.join(UPLOAD_DIR, filename);
+        } else if (source === 'proxy') {
+            filePath = path.join(PROXY_LOG_DIR_RESOLVED, filename);
         } else {
             filePath = path.join(LOG_DIR, filename);
         }
@@ -159,7 +555,8 @@ app.get('/api/files/:filename/line/:line', (req, res) => {
     
     const line = lines[lineNum - 1];
     try {
-        const json = JSON.parse(line);
+        let json = JSON.parse(line);
+        json = formatLoggedBody(json);
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.send(JSON.stringify(json, null, 2));
     } catch (e) {
@@ -178,6 +575,8 @@ app.delete('/api/files/:filename', (req, res) => {
     let filePath;
     if (source === 'upload') {
         filePath = path.join(UPLOAD_DIR, filename);
+    } else if (source === 'proxy') {
+        filePath = path.join(PROXY_LOG_DIR_RESOLVED, filename);
     } else {
         filePath = path.join(LOG_DIR, filename);
     }
@@ -186,7 +585,7 @@ app.delete('/api/files/:filename', (req, res) => {
         return res.status(404).json({ error: 'File not found' });
     }
     
-    if (source === 'upload') {
+    if (source === 'upload' || source === 'proxy') {
         try {
             fs.unlinkSync(filePath);
             broadcast({
@@ -314,6 +713,69 @@ if (fs.existsSync(LOG_DIR)) {
     console.log(`Watching for changes in: ${LOG_DIR}`);
 } else {
     console.warn(`Log directory does not exist: ${LOG_DIR}`);
+}
+
+if (fs.existsSync(UPLOAD_DIR)) {
+    const uploadWatcher = chokidar.watch(path.join(UPLOAD_DIR, '*.log'), {
+        persistent: true,
+        ignoreInitial: true,
+        usePolling: true,
+        interval: 500,
+        awaitWriteFinish: {
+            stabilityThreshold: 300,
+            pollInterval: 100
+        }
+    });
+
+    uploadWatcher.on('add', (filePath) => {
+        console.log('File added:', filePath);
+        broadcast({
+            type: 'files',
+            data: getLogFiles()
+        });
+    });
+
+    uploadWatcher.on('change', (filePath) => {
+        const filename = path.basename(filePath);
+        const source = getUploadDirSourceForFilename(filename);
+        console.log('File changed:', filename);
+        broadcast({
+            type: 'files',
+            data: getLogFiles()
+        });
+        broadcast({
+            type: 'fileChanged',
+            data: {
+                filename,
+                content: getFileContent(filename, source),
+                source
+            }
+        });
+    });
+
+    uploadWatcher.on('unlink', (filePath) => {
+        console.log('File removed:', filePath);
+        broadcast({
+            type: 'files',
+            data: getLogFiles()
+        });
+        broadcast({
+            type: 'fileRemoved',
+            data: { filename: path.basename(filePath) }
+        });
+    });
+
+    uploadWatcher.on('error', (error) => {
+        console.error('Watcher error:', error);
+    });
+
+    uploadWatcher.on('ready', () => {
+        console.log('Watcher ready');
+    });
+
+    console.log(`Watching for changes in: ${UPLOAD_DIR}`);
+} else {
+    console.warn(`Upload directory does not exist: ${UPLOAD_DIR}`);
 }
 
 const PORT = process.env.PORT || 3000;
