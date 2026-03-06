@@ -16,6 +16,9 @@ const LOG_DIR = path.join(os.homedir(), '.claude-code-router/logs');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const PROXY_TARGET = process.env.CLAUDE_PROXY_TARGET;
 const PROXY_LOG_DIR = process.env.CLAUDE_PROXY_LOG_DIR || UPLOAD_DIR;
+const DEFAULT_TAIL_BYTES = Number.parseInt(process.env.CLAUDE_LOG_TAIL_BYTES || '2000000', 10);
+const DEFAULT_LINE_READ_BYTES = Number.parseInt(process.env.CLAUDE_LOG_LINE_MAX_BYTES || '5000000', 10);
+const DEFAULT_PROXY_LOG_BODY_BYTES = Number.parseInt(process.env.CLAUDE_PROXY_LOG_BODY_BYTES || '2000000', 10);
 
 if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -376,6 +379,13 @@ app.all('/claude/proxy*', async (req, res) => {
         headers
     };
 
+    const maxLoggedBytes = Number.isFinite(DEFAULT_PROXY_LOG_BODY_BYTES) && DEFAULT_PROXY_LOG_BODY_BYTES > 0 ? DEFAULT_PROXY_LOG_BODY_BYTES : 2000000;
+    const requestLogBuffer = bodyBuffer && bodyBuffer.length > maxLoggedBytes ? bodyBuffer.subarray(0, maxLoggedBytes) : bodyBuffer;
+    const requestBodySerialized = serializeBody(requestLogBuffer, req.headers['content-type']);
+    const requestBodyRecord = requestBodySerialized && bodyBuffer && bodyBuffer.length > maxLoggedBytes
+        ? { ...requestBodySerialized, truncatedBytes: true, originalSize: bodyBuffer.length }
+        : requestBodySerialized;
+
     appendJsonl(logFilePath, {
         type: 'request',
         id: requestId,
@@ -385,12 +395,15 @@ app.all('/claude/proxy*', async (req, res) => {
         url: req.originalUrl,
         target: targetUrl.toString(),
         headers: redactHeaders(req.headers),
-        body: serializeBody(bodyBuffer, req.headers['content-type'])
+        body: requestBodyRecord
     });
 
     const client = targetUrl.protocol === 'https:' ? https : http;
     const proxyReq = client.request(options, (proxyRes) => {
         const responseChunks = [];
+        let responseBytes = 0;
+        let responseLoggedBytes = 0;
+        let responseTruncated = false;
         res.status(proxyRes.statusCode || 502);
         Object.entries(proxyRes.headers || {}).forEach(([key, value]) => {
             if (value !== undefined) {
@@ -398,12 +411,29 @@ app.all('/claude/proxy*', async (req, res) => {
             }
         });
         proxyRes.on('data', chunk => {
-            responseChunks.push(chunk);
+            responseBytes += chunk.length;
+            if (!responseTruncated) {
+                const remaining = maxLoggedBytes - responseLoggedBytes;
+                if (remaining > 0) {
+                    const part = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+                    responseChunks.push(part);
+                    responseLoggedBytes += part.length;
+                } else {
+                    responseTruncated = true;
+                }
+                if (responseBytes > maxLoggedBytes) {
+                    responseTruncated = true;
+                }
+            }
             res.write(chunk);
         });
         proxyRes.on('end', () => {
             res.end();
             const responseBuffer = Buffer.concat(responseChunks);
+            const responseBodySerialized = serializeBody(responseBuffer, proxyRes.headers && proxyRes.headers['content-type']);
+            const responseBodyRecord = responseBodySerialized && responseTruncated
+                ? { ...responseBodySerialized, truncatedBytes: true, originalSize: responseBytes }
+                : responseBodySerialized;
             appendJsonl(logFilePath, {
                 type: 'response',
                 id: requestId,
@@ -411,7 +441,7 @@ app.all('/claude/proxy*', async (req, res) => {
                 durationMs: Date.now() - start,
                 status: proxyRes.statusCode,
                 headers: redactHeaders(proxyRes.headers || {}),
-                body: serializeBody(responseBuffer, proxyRes.headers && proxyRes.headers['content-type'])
+                body: responseBodyRecord
             });
         });
     });
@@ -493,20 +523,87 @@ function getLogFiles() {
     return files.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
 }
 
-function getFileContent(filename, source) {
+function resolveLogFilePath(filename, source) {
+    if (source === 'upload') {
+        return path.join(UPLOAD_DIR, filename);
+    }
+    if (source === 'proxy') {
+        return path.join(PROXY_LOG_DIR_RESOLVED, filename);
+    }
+    return path.join(LOG_DIR, filename);
+}
+
+function trimLeadingPartialLine(buffer, startOffset) {
+    if (startOffset <= 0) {
+        return { buffer, startOffset };
+    }
+    const newlineIndex = buffer.indexOf('\n');
+    if (newlineIndex === -1) {
+        return { buffer: Buffer.alloc(0), startOffset: startOffset + buffer.length };
+    }
+    return {
+        buffer: buffer.slice(newlineIndex + 1),
+        startOffset: startOffset + newlineIndex + 1
+    };
+}
+
+function readFileTail(filePath, tailBytes) {
+    const stats = fs.statSync(filePath);
+    const size = stats.size;
+    const maxRead = Number.isFinite(tailBytes) && tailBytes > 0 ? tailBytes : size;
+    const bytesToRead = Math.min(maxRead, size);
+    const startOffset = Math.max(0, size - bytesToRead);
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(bytesToRead);
+    fs.readSync(fd, buffer, 0, bytesToRead, startOffset);
+    fs.closeSync(fd);
+    const trimmed = trimLeadingPartialLine(buffer, startOffset);
+    return {
+        content: trimmed.buffer.toString('utf8'),
+        startOffset: trimmed.startOffset,
+        truncated: size > bytesToRead,
+        size
+    };
+}
+
+function readFileSegment(filePath, startOffset, maxBytes) {
+    const stats = fs.statSync(filePath);
+    const size = stats.size;
+    const safeStart = Math.max(0, Math.min(startOffset || 0, size));
+    const maxRead = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : size;
+    const bytesToRead = Math.min(maxRead, size - safeStart);
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(bytesToRead);
+    fs.readSync(fd, buffer, 0, bytesToRead, safeStart);
+    fs.closeSync(fd);
+    const trimmed = trimLeadingPartialLine(buffer, safeStart);
+    return {
+        content: trimmed.buffer.toString('utf8'),
+        startOffset: trimmed.startOffset,
+        truncated: safeStart > 0 || size > (trimmed.startOffset + trimmed.buffer.length),
+        size
+    };
+}
+
+function getFileContent(filename, source, options = {}) {
     try {
-        let filePath;
-        if (source === 'upload') {
-            filePath = path.join(UPLOAD_DIR, filename);
-        } else if (source === 'proxy') {
-            filePath = path.join(PROXY_LOG_DIR_RESOLVED, filename);
-        } else {
-            filePath = path.join(LOG_DIR, filename);
-        }
+        const filePath = resolveLogFilePath(filename, source);
         if (!fs.existsSync(filePath)) {
             return null;
         }
-        return fs.readFileSync(filePath, 'utf-8');
+        if (options.full) {
+            return {
+                content: fs.readFileSync(filePath, 'utf-8'),
+                startOffset: 0,
+                truncated: false,
+                size: fs.statSync(filePath).size
+            };
+        }
+        if (Number.isFinite(options.startOffset) && options.startOffset >= 0) {
+            return readFileSegment(filePath, options.startOffset, DEFAULT_LINE_READ_BYTES);
+        }
+        const tailBytes = Number.isFinite(options.tailBytes) ? options.tailBytes : DEFAULT_TAIL_BYTES;
+        return readFileTail(filePath, tailBytes);
     } catch (error) {
         console.error('Error reading file:', error);
         return null;
@@ -524,11 +621,13 @@ app.get('/api/files/:filename', (req, res) => {
     if (!filename.endsWith('.log')) {
         return res.status(400).json({ error: 'Invalid file type' });
     }
-    const content = getFileContent(filename, source);
-    if (content === null) {
+    const full = req.query.full === '1';
+    const tailBytes = Number.parseInt(req.query.tailBytes, 10);
+    const contentData = getFileContent(filename, source, { full, tailBytes });
+    if (contentData === null) {
         return res.status(404).json({ error: 'File not found' });
     }
-    res.json({ filename, content, source });
+    res.json({ filename, content: contentData.content, source, startOffset: contentData.startOffset, truncated: contentData.truncated, size: contentData.size });
 });
 
 app.get('/api/files/:filename/line/:line', (req, res) => {
@@ -542,13 +641,18 @@ app.get('/api/files/:filename/line/:line', (req, res) => {
     if (isNaN(lineNum) || lineNum < 1) {
         return res.status(400).json({ error: 'Invalid line number' });
     }
-    
-    const content = getFileContent(filename, source);
-    if (content === null) {
+
+    const startOffset = Number.parseInt(req.query.startOffset, 10);
+    const tailBytes = Number.parseInt(req.query.tailBytes, 10);
+    const contentData = getFileContent(filename, source, {
+        startOffset: Number.isFinite(startOffset) ? startOffset : undefined,
+        tailBytes: Number.isFinite(tailBytes) ? tailBytes : undefined
+    });
+    if (contentData === null) {
         return res.status(404).json({ error: 'File not found' });
     }
     
-    const lines = content.split('\n').filter(line => line.trim());
+    const lines = contentData.content.split('\n').filter(line => line.trim());
     if (lineNum > lines.length) {
         return res.status(404).json({ error: 'Line not found' });
     }
@@ -572,14 +676,7 @@ app.delete('/api/files/:filename', (req, res) => {
         return res.status(400).json({ error: 'Invalid file type' });
     }
     
-    let filePath;
-    if (source === 'upload') {
-        filePath = path.join(UPLOAD_DIR, filename);
-    } else if (source === 'proxy') {
-        filePath = path.join(PROXY_LOG_DIR_RESOLVED, filename);
-    } else {
-        filePath = path.join(LOG_DIR, filename);
-    }
+    const filePath = resolveLogFilePath(filename, source);
     
     if (!fs.existsSync(filePath)) {
         return res.status(404).json({ error: 'File not found' });
@@ -684,7 +781,6 @@ if (fs.existsSync(LOG_DIR)) {
             type: 'fileChanged',
             data: {
                 filename,
-                content: getFileContent(filename, 'system'),
                 source: 'system'
             }
         });
@@ -747,7 +843,6 @@ if (fs.existsSync(UPLOAD_DIR)) {
             type: 'fileChanged',
             data: {
                 filename,
-                content: getFileContent(filename, source),
                 source
             }
         });

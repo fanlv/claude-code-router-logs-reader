@@ -720,6 +720,8 @@
     <script>
         let currentFile = null;
         let currentSource = null;
+        let currentStartOffset = 0;
+        let refreshTimer = null;
         let files = [];
         let ws = null;
         let logEntries = [];
@@ -1256,7 +1258,12 @@
                 showToast('请先选择文件');
                 return;
             }
-            const url = `/api/files/${encodeURIComponent(currentFile)}/line/${index}?source=${currentSource}`;
+            const params = new URLSearchParams();
+            params.set('source', currentSource);
+            if (Number.isFinite(currentStartOffset) && currentStartOffset > 0) {
+                params.set('startOffset', String(currentStartOffset));
+            }
+            const url = `/api/files/${encodeURIComponent(currentFile)}/line/${index}?${params.toString()}`;
             window.open(url, '_blank');
         }
 
@@ -1418,6 +1425,7 @@
         async function selectFile(filename, source) {
             currentFile = filename;
             currentSource = source;
+            currentStartOffset = 0;
             renderFileList();
             
             const contentBody = document.getElementById('contentBody');
@@ -1431,6 +1439,7 @@
                 if (!response.ok) throw new Error('Failed to load file');
                 
                 const data = await response.json();
+                currentStartOffset = Number.isFinite(data.startOffset) ? data.startOffset : 0;
                 logEntries = parseLogContent(data.content);
                 expandedEntries.clear();
                 expandedDetailHeight = 0;
@@ -1485,22 +1494,30 @@
                     
                     case 'fileChanged':
                         if (currentFile === message.data.filename && currentSource === message.data.source) {
-                            logEntries = parseLogContent(message.data.content);
-                            applyFilters();
-                            
-                            const contentBody = document.getElementById('contentBody');
-                            contentBody.scrollTop = contentBody.scrollHeight;
-                            
-                            const contentTitle = document.getElementById('contentTitle');
-                            const existingBadge = contentTitle.querySelector('.update-badge');
-                            if (existingBadge) existingBadge.remove();
-                            
-                            const badge = document.createElement('span');
-                            badge.className = 'update-badge';
-                            badge.textContent = '已更新';
-                            contentTitle.appendChild(badge);
-                            
-                            setTimeout(() => badge.remove(), 2000);
+                            if (refreshTimer) {
+                                clearTimeout(refreshTimer);
+                            }
+                            refreshTimer = setTimeout(async () => {
+                                try {
+                                    const response = await fetch(`/api/files/${encodeURIComponent(currentFile)}?source=${currentSource}`);
+                                    if (!response.ok) return;
+                                    const data = await response.json();
+                                    currentStartOffset = Number.isFinite(data.startOffset) ? data.startOffset : 0;
+                                    logEntries = parseLogContent(data.content);
+                                    applyFilters();
+                                    const contentBody = document.getElementById('contentBody');
+                                    contentBody.scrollTop = contentBody.scrollHeight;
+                                    const contentTitle = document.getElementById('contentTitle');
+                                    const existingBadge = contentTitle.querySelector('.update-badge');
+                                    if (existingBadge) existingBadge.remove();
+                                    const badge = document.createElement('span');
+                                    badge.className = 'update-badge';
+                                    badge.textContent = '已更新';
+                                    contentTitle.appendChild(badge);
+                                    setTimeout(() => badge.remove(), 2000);
+                                } catch (e) {
+                                }
+                            }, 150);
                         }
                         break;
                     

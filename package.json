@@ -4,8 +4,8 @@
   "description": "A web application to read and display Claude code router logs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node --max-old-space-size=16384 server.js",
+    "dev": "node --max-old-space-size=16384 server.js"
   },
   "dependencies": {
     "chokidar": "^3.5.3",
