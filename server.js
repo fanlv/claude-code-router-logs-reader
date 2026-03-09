@@ -634,7 +634,7 @@ app.get('/api/files/:filename/line/:line', (req, res) => {
     const filename = req.params.filename;
     const lineNum = parseInt(req.params.line, 10);
     const source = req.query.source || 'system';
-    
+
     if (!filename.endsWith('.log')) {
         return res.status(400).json({ error: 'Invalid file type' });
     }
@@ -642,31 +642,47 @@ app.get('/api/files/:filename/line/:line', (req, res) => {
         return res.status(400).json({ error: 'Invalid line number' });
     }
 
-    const startOffset = Number.parseInt(req.query.startOffset, 10);
-    const tailBytes = Number.parseInt(req.query.tailBytes, 10);
-    const contentData = getFileContent(filename, source, {
-        startOffset: Number.isFinite(startOffset) ? startOffset : undefined,
-        tailBytes: Number.isFinite(tailBytes) ? tailBytes : undefined
-    });
-    if (contentData === null) {
+    const filePath = resolveLogFilePath(filename, source);
+    if (!filePath || !fs.existsSync(filePath)) {
         return res.status(404).json({ error: 'File not found' });
     }
-    
-    const lines = contentData.content.split('\n').filter(line => line.trim());
-    if (lineNum > lines.length) {
-        return res.status(404).json({ error: 'Line not found' });
-    }
-    
-    const line = lines[lineNum - 1];
-    try {
-        let json = JSON.parse(line);
-        json = formatLoggedBody(json);
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.send(JSON.stringify(json, null, 2));
-    } catch (e) {
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(line);
-    }
+
+    // Read the file line by line to find the target line without loading entire file
+    const readline = require('readline');
+    const rl = readline.createInterface({
+        input: fs.createReadStream(filePath),
+        crlfDelay: Infinity
+    });
+    let currentLine = 0;
+    let found = false;
+    rl.on('line', (line) => {
+        currentLine++;
+        if (currentLine === lineNum) {
+            found = true;
+            rl.close();
+            if (!line.trim()) {
+                return res.status(404).json({ error: 'Line is empty' });
+            }
+            try {
+                let json = JSON.parse(line);
+                json = formatLoggedBody(json);
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                res.send(JSON.stringify(json, null, 2));
+            } catch (e) {
+                res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                res.send(line);
+            }
+        }
+    });
+    rl.on('close', () => {
+        if (!found) {
+            res.status(404).json({ error: 'Line not found' });
+        }
+    });
+    rl.on('error', (err) => {
+        console.error('Error reading line:', err);
+        res.status(500).json({ error: 'Failed to read file' });
+    });
 });
 
 app.delete('/api/files/:filename', (req, res) => {
