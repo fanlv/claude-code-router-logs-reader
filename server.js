@@ -547,6 +547,25 @@ function trimLeadingPartialLine(buffer, startOffset) {
     };
 }
 
+function countNewlinesBeforeOffset(filePath, offset) {
+    if (offset <= 0) return 0;
+    const fd = fs.openSync(filePath, 'r');
+    const CHUNK = 65536;
+    let count = 0;
+    let pos = 0;
+    const buf = Buffer.alloc(Math.min(CHUNK, offset));
+    while (pos < offset) {
+        const toRead = Math.min(CHUNK, offset - pos);
+        fs.readSync(fd, buf, 0, toRead, pos);
+        for (let i = 0; i < toRead; i++) {
+            if (buf[i] === 0x0A) count++;
+        }
+        pos += toRead;
+    }
+    fs.closeSync(fd);
+    return count;
+}
+
 function readFileTail(filePath, tailBytes) {
     const stats = fs.statSync(filePath);
     const size = stats.size;
@@ -558,11 +577,13 @@ function readFileTail(filePath, tailBytes) {
     fs.readSync(fd, buffer, 0, bytesToRead, startOffset);
     fs.closeSync(fd);
     const trimmed = trimLeadingPartialLine(buffer, startOffset);
+    const skippedLines = countNewlinesBeforeOffset(filePath, trimmed.startOffset);
     return {
         content: trimmed.buffer.toString('utf8'),
         startOffset: trimmed.startOffset,
         truncated: size > bytesToRead,
-        size
+        size,
+        skippedLines
     };
 }
 
@@ -577,11 +598,13 @@ function readFileSegment(filePath, startOffset, maxBytes) {
     fs.readSync(fd, buffer, 0, bytesToRead, safeStart);
     fs.closeSync(fd);
     const trimmed = trimLeadingPartialLine(buffer, safeStart);
+    const skippedLines = countNewlinesBeforeOffset(filePath, trimmed.startOffset);
     return {
         content: trimmed.buffer.toString('utf8'),
         startOffset: trimmed.startOffset,
         truncated: safeStart > 0 || size > (trimmed.startOffset + trimmed.buffer.length),
-        size
+        size,
+        skippedLines
     };
 }
 
@@ -627,7 +650,7 @@ app.get('/api/files/:filename', (req, res) => {
     if (contentData === null) {
         return res.status(404).json({ error: 'File not found' });
     }
-    res.json({ filename, content: contentData.content, source, startOffset: contentData.startOffset, truncated: contentData.truncated, size: contentData.size });
+    res.json({ filename, content: contentData.content, source, startOffset: contentData.startOffset, truncated: contentData.truncated, size: contentData.size, skippedLines: contentData.skippedLines || 0 });
 });
 
 app.get('/api/files/:filename/line/:line', (req, res) => {

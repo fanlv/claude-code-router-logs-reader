@@ -721,6 +721,7 @@
         let currentFile = null;
         let currentSource = null;
         let currentStartOffset = 0;
+        let currentSkippedLines = 0;
         let refreshTimer = null;
         let files = [];
         let ws = null;
@@ -892,16 +893,22 @@
             return json.msg || '';
         }
 
-        function parseLogContent(content) {
-            const lines = content.split('\n').filter(line => line.trim());
-            return lines.map((line, index) => {
+        function parseLogContent(content, lineOffset) {
+            const base = lineOffset || 0;
+            const lines = content.split('\n');
+            const entries = [];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (!line.trim()) continue;
+                const lineNum = base + i + 1;
                 try {
                     const json = JSON.parse(line);
-                    return { index: index + 1, json, raw: line };
+                    entries.push({ index: lineNum, json, raw: line });
                 } catch (e) {
-                    return { index: index + 1, json: null, raw: line };
+                    entries.push({ index: lineNum, json: null, raw: line });
                 }
-            });
+            }
+            return entries;
         }
 
         function applyFilters() {
@@ -1260,9 +1267,6 @@
             }
             const params = new URLSearchParams();
             params.set('source', currentSource);
-            if (Number.isFinite(currentStartOffset) && currentStartOffset > 0) {
-                params.set('startOffset', String(currentStartOffset));
-            }
             const url = `/api/files/${encodeURIComponent(currentFile)}/line/${index}?${params.toString()}`;
             window.open(url, '_blank');
         }
@@ -1440,7 +1444,8 @@
                 
                 const data = await response.json();
                 currentStartOffset = Number.isFinite(data.startOffset) ? data.startOffset : 0;
-                logEntries = parseLogContent(data.content);
+                currentSkippedLines = Number.isFinite(data.skippedLines) ? data.skippedLines : 0;
+                logEntries = parseLogContent(data.content, currentSkippedLines);
                 expandedEntries.clear();
                 expandedDetailHeight = 0;
                 virtualScrollState.expandedKey = '';
@@ -1503,7 +1508,8 @@
                                     if (!response.ok) return;
                                     const data = await response.json();
                                     currentStartOffset = Number.isFinite(data.startOffset) ? data.startOffset : 0;
-                                    logEntries = parseLogContent(data.content);
+                                    currentSkippedLines = Number.isFinite(data.skippedLines) ? data.skippedLines : 0;
+                                    logEntries = parseLogContent(data.content, currentSkippedLines);
                                     applyFilters();
                                     const contentBody = document.getElementById('contentBody');
                                     contentBody.scrollTop = contentBody.scrollHeight;
