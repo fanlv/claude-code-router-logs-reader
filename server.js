@@ -165,13 +165,15 @@ function appendJsonl(filePath, record) {
     });
 }
 
-function formatUtc8Hour(date) {
+function formatUtc8HalfHour(date) {
     const d = new Date(date.getTime() + 8 * 60 * 60 * 1000);
     const yyyy = d.getUTCFullYear();
     const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
     const dd = String(d.getUTCDate()).padStart(2, '0');
     const hh = String(d.getUTCHours()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}-${hh}`;
+    const mi = d.getUTCMinutes();
+    const half = mi < 30 ? '00' : '30';
+    return `${yyyy}-${mm}-${dd}-${hh}-${half}`;
 }
 
 function sanitizeForFilename(value) {
@@ -359,8 +361,8 @@ app.all('/claude/proxy*', async (req, res) => {
     const requestId = generateRequestId();
     const start = Date.now();
     const clientIp = getClientIp(req);
-    const logHour = formatUtc8Hour(new Date());
-    const logFilePath = path.join(PROXY_LOG_DIR_RESOLVED, `claude-${sanitizeForFilename(clientIp)}-${logHour}.log`);
+    const logHalfHour = formatUtc8HalfHour(new Date());
+    const logFilePath = path.join(PROXY_LOG_DIR_RESOLVED, `claude-${sanitizeForFilename(clientIp)}-${logHalfHour}.log`);
     const targetUrl = buildTargetUrl(req);
     const bodyBuffer = await getRequestBodyBuffer(req);
     const headers = { ...req.headers };
