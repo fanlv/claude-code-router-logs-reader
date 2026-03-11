@@ -314,6 +314,25 @@
             background-color: #e0e0e0;
         }
 
+        .log-chat-view {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #888888;
+            flex-shrink: 0;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.15s ease;
+            font-size: 12px;
+        }
+
+        .log-chat-view:hover {
+            color: #333333;
+            background-color: #e0e0e0;
+        }
+
         .toast {
             position: fixed;
             top: 20px;
@@ -652,6 +671,77 @@
         .json-line {
             display: block;
         }
+
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 16px;
+        }
+
+        .chat-row {
+            display: flex;
+        }
+
+        .chat-row.user {
+            justify-content: flex-end;
+        }
+
+        .chat-row.assistant {
+            justify-content: flex-start;
+        }
+
+        .chat-row.other {
+            justify-content: center;
+        }
+
+        .chat-bubble {
+            max-width: 75%;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 10px 12px;
+            background-color: #ffffff;
+        }
+
+        .chat-row.user .chat-bubble {
+            background-color: #e3f2fd;
+            border-color: #bbdefb;
+        }
+
+        .chat-row.assistant .chat-bubble {
+            background-color: #f5f5f5;
+            border-color: #e0e0e0;
+        }
+
+        .chat-meta {
+            font-size: 11px;
+            color: #666666;
+            margin-bottom: 6px;
+        }
+
+        .chat-text {
+            margin: 0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #333333;
+        }
+
+        .chat-more {
+            margin-top: 6px;
+            font-size: 12px;
+            border: none;
+            background: transparent;
+            color: #007acc;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .chat-more:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -745,6 +835,13 @@
         let currentEntriesIndexMap = new Map();
         let filterDebounceTimer = null;
         const FILTER_DEBOUNCE_MS = 150;
+        let chatMessages = [];
+        const expandedChatMessageIds = new Set();
+        let currentViewMode = 'log';
+        let currentChatState = null;
+        let currentFileTruncated = false;
+        let currentFileLoadedFull = false;
+        let currentFileSizeBytes = 0;
 
         function getExpandedMaxHeight() {
             return Math.max(160, Math.floor(virtualScrollState.containerHeight * 0.7));
@@ -852,6 +949,262 @@
             return escapeHtml(String(obj));
         }
 
+        function getMainAgentMessages(data) {
+            function normalizeCandidate(c) {
+                if (Array.isArray(c)) return c;
+                if (!c) return null;
+                if (typeof c === 'string') {
+                    const text = c.trim();
+                    if (!text) return null;
+                    try {
+                        return normalizeCandidate(JSON.parse(text));
+                    } catch (e) {
+                        return null;
+                    }
+                }
+                if (typeof c === 'object') {
+                    if (Array.isArray(c.messages)) return c.messages;
+                    if (Array.isArray(c.message)) return c.message;
+                    if (typeof c.role === 'string' || c.content !== undefined) return [c];
+                }
+                return null;
+            }
+
+            const candidates = [
+                data && data.body && data.body.value && data.body.value.messages,
+                data && data.body && data.body.messages,
+                data && data.body && data.body.value && data.body.value.message,
+                data && data.body && data.body.message,
+                data && data.data && data.data.messages,
+                data && data.data && data.data.message,
+                data && data.message,
+                data && data.messages
+            ];
+            for (const c of candidates) {
+                const normalized = normalizeCandidate(c);
+                if (normalized) return normalized;
+            }
+            return [];
+        }
+
+        function safeJsonStringify(value) {
+            try {
+                return JSON.stringify(value, null, 2);
+            } catch (e) {
+                try {
+                    return String(value);
+                } catch (e2) {
+                    return '';
+                }
+            }
+        }
+
+        function normalizeMessageContent(content) {
+            if (Array.isArray(content)) return content;
+            if (content === null || content === undefined) return [];
+            return [content];
+        }
+
+        function messageToPlainText(message) {
+            const items = normalizeMessageContent(message && message.content);
+            const parts = [];
+            for (const item of items) {
+                if (typeof item === 'string') {
+                    if (item.trim()) parts.push(item);
+                    continue;
+                }
+                if (!item || typeof item !== 'object') {
+                    const text = String(item || '');
+                    if (text.trim()) parts.push(text);
+                    continue;
+                }
+                const type = item.type;
+                if (type === 'text') {
+                    const t = typeof item.text === 'string' ? item.text : '';
+                    if (t.trim()) parts.push(t);
+                    continue;
+                }
+                if (type === 'thinking') {
+                    const t = typeof item.thinking === 'string' ? item.thinking : '';
+                    if (t.trim()) parts.push(t);
+                    continue;
+                }
+                if (type === 'tool_use') {
+                    const name = typeof item.name === 'string' ? item.name : '';
+                    const input = item.input !== undefined ? safeJsonStringify(item.input) : '';
+                    const t = `tool_use${name ? ` ${name}` : ''}${input ? `\n${input}` : ''}`;
+                    if (t.trim()) parts.push(t);
+                    continue;
+                }
+                if (type === 'tool_result') {
+                    const content = item.content !== undefined ? item.content : '';
+                    const t = typeof content === 'string' ? content : safeJsonStringify(content);
+                    if (t.trim()) parts.push(t);
+                    continue;
+                }
+                const fallback = safeJsonStringify(item);
+                if (fallback.trim()) parts.push(fallback);
+            }
+            return parts.join('\n\n').trim();
+        }
+
+        function buildChatMessages(data) {
+            const messages = getMainAgentMessages(data);
+            return messages.map((m, idx) => {
+                const role = m && typeof m.role === 'string' ? m.role : 'unknown';
+                return {
+                    id: idx,
+                    role,
+                    text: messageToPlainText(m),
+                    raw: m
+                };
+            });
+        }
+
+        function truncateText(text, limit) {
+            const s = String(text || '');
+            const n = typeof limit === 'number' && Number.isFinite(limit) ? limit : 100;
+            if (s.length <= n) return s;
+            return s.slice(0, n);
+        }
+
+        function renderChatMessages() {
+            const contentBody = document.getElementById('contentBody');
+            if (!chatMessages || chatMessages.length === 0) {
+                contentBody.innerHTML = `
+                    <div class="empty-state">
+                        <p>未解析到 messages</p>
+                    </div>
+                `;
+                return;
+            }
+            const html = chatMessages.map(renderChatMessage).join('');
+            contentBody.innerHTML = `<div class="chat-container">${html}</div>`;
+        }
+
+        function renderChatMessage(msg) {
+            const role = msg && msg.role ? msg.role : 'unknown';
+            const roleClass = role === 'user' ? 'user' : (role === 'assistant' ? 'assistant' : 'other');
+            const roleLabel = role === 'user' ? '👤 用户' : (role === 'assistant' ? '🤖 助手' : role);
+            const full = msg && typeof msg.text === 'string' ? msg.text : '';
+            const isExpanded = expandedChatMessageIds.has(msg.id);
+            const preview = truncateText(full, 100);
+            const hasMore = full.length > 100;
+            const shown = isExpanded ? full : preview;
+            const moreBtn = hasMore
+                ? `<button class="chat-more" onclick="toggleChatMessage(${msg.id}, event)">${isExpanded ? '收起' : '更多'}</button>`
+                : '';
+            return `
+                <div class="chat-row ${roleClass}">
+                    <div class="chat-bubble">
+                        <div class="chat-meta">${escapeHtml(roleLabel)}</div>
+                        <pre class="chat-text">${escapeHtml(shown)}</pre>
+                        ${moreBtn}
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleChatMessage(id, event) {
+            if (event) event.stopPropagation();
+            if (expandedChatMessageIds.has(id)) {
+                expandedChatMessageIds.delete(id);
+            } else {
+                expandedChatMessageIds.add(id);
+            }
+            renderChatMessages();
+        }
+
+        function enterChatMode(title) {
+            currentViewMode = 'chat';
+            document.getElementById('filterGroup').style.display = 'none';
+            document.getElementById('shareBtn').style.display = 'inline-block';
+            document.getElementById('expandAllBtn').style.display = 'none';
+            document.getElementById('collapseAllBtn').style.display = 'none';
+            document.getElementById('logCount').textContent = '';
+            document.getElementById('contentTitle').textContent = title || '对话';
+            expandedChatMessageIds.clear();
+            chatMessages = [];
+        }
+
+        function setContentLoading() {
+            const contentBody = document.getElementById('contentBody');
+            contentBody.innerHTML = `<div class="loading"></div>`;
+        }
+
+        function setContentError(message) {
+            const contentBody = document.getElementById('contentBody');
+            contentBody.innerHTML = `
+                <div class="empty-state">
+                    <p>${escapeHtml(message)}</p>
+                </div>
+            `;
+        }
+
+        function openChatViewWithData(data, title) {
+            enterChatMode(title);
+            chatMessages = buildChatMessages(data);
+            renderChatMessages();
+        }
+
+        function openChatViewFromLine(index, event, replaceUrl) {
+            if (event) event.stopPropagation();
+            if (!currentFile || !currentSource) {
+                showToast('请先选择文件');
+                return;
+            }
+
+            const title = `${currentFile}#${index} 对话`;
+            currentChatState = { type: 'line', file: currentFile, source: currentSource, line: index };
+            setChatUrlState(currentChatState, replaceUrl === true);
+            enterChatMode(title);
+            setContentLoading();
+
+            const params = new URLSearchParams();
+            params.set('source', currentSource);
+            const url = `/api/files/${encodeURIComponent(currentFile)}/line/${index}?${params.toString()}`;
+            fetch(url)
+                .then(res => {
+                    const ct = String(res.headers.get('content-type') || '');
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    if (!ct.includes('application/json')) throw new Error('返回内容不是 JSON');
+                    return res.json();
+                })
+                .then(data => {
+                    openChatViewWithData(data, title);
+                })
+                .catch(err => {
+                    setContentError(`加载失败：${err.message}`);
+                });
+        }
+
+        function setUrlSearchParams(params, replace) {
+            const search = params && params.toString ? params.toString() : '';
+            const url = `${window.location.pathname}${search ? `?${search}` : ''}`;
+            if (replace) {
+                window.history.replaceState({}, '', url);
+            } else {
+                window.history.pushState({}, '', url);
+            }
+        }
+
+        function setChatUrlState(state, replace) {
+            if (!state || state.type !== 'line') {
+                setUrlSearchParams(new URLSearchParams(), replace);
+                return;
+            }
+            const params = new URLSearchParams();
+            params.set('mode', 'chat');
+            if (state.type === 'line') {
+                params.set('chat', 'line');
+                params.set('file', state.file);
+                params.set('source', state.source);
+                params.set('line', String(state.line));
+                setUrlSearchParams(params, replace);
+                return;
+            }
+        }
+
         function getLogType(json) {
             return json.type || '';
         }
@@ -911,6 +1264,67 @@
             return entries;
         }
 
+        function isRequestBodyEntry(json) {
+            if (!json || typeof json !== 'object') return false;
+            if (typeof json.msg === 'string' && json.msg.toLowerCase() === 'final request') return false;
+            const t = typeof json.type === 'string' ? json.type.toLowerCase() : '';
+            if (t === 'request body' || t === 'request_body') return true;
+            const directBody = json.body !== undefined ? json.body : (json.req && json.req.body);
+            if (directBody !== null && directBody !== undefined) {
+                if (typeof directBody === 'object') {
+                    if (directBody.type || directBody.value !== undefined || directBody.size !== undefined) return true;
+                }
+                if (typeof directBody === 'string' && directBody.trim()) return true;
+            }
+
+            if (json.data !== null && json.data !== undefined) {
+                const d = json.data;
+                if (typeof d === 'object') {
+                    if (Array.isArray(d.messages) && d.messages.length > 0) return true;
+                }
+            }
+
+            return false;
+        }
+
+        async function loadCurrentFileContent(options) {
+            if (!currentFile || !currentSource) {
+                throw new Error('请先选择文件');
+            }
+            const params = new URLSearchParams();
+            params.set('source', currentSource);
+            if (options && options.full) {
+                params.set('full', '1');
+            }
+            const url = `/api/files/${encodeURIComponent(currentFile)}?${params.toString()}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('Failed to load file');
+            return res.json();
+        }
+
+        async function ensureFullFileLoadedForFilters() {
+            if (!currentFile || !currentSource) return false;
+            if (currentFileLoadedFull) return false;
+            if (!currentFileTruncated) return false;
+            if (!(Number.isFinite(currentFileSizeBytes) && currentFileSizeBytes > 0)) return false;
+            if (currentFileSizeBytes > 350 * 1024 * 1024) return false;
+
+            const contentBody = document.getElementById('contentBody');
+            contentBody.innerHTML = '<div class="loading"></div>';
+            const data = await loadCurrentFileContent({ full: true });
+            currentStartOffset = 0;
+            currentSkippedLines = 0;
+            currentFileTruncated = false;
+            currentFileLoadedFull = true;
+            currentFileSizeBytes = Number.isFinite(data.size) ? data.size : currentFileSizeBytes;
+            logEntries = parseLogContent(data.content, 0);
+            expandedEntries.clear();
+            expandedDetailHeight = 0;
+            virtualScrollState.expandedKey = '';
+            showToast('已加载完整文件用于过滤');
+            return true;
+        }
+
         function applyFilters() {
             if (filterDebounceTimer) {
                 clearTimeout(filterDebounceTimer);
@@ -918,56 +1332,65 @@
             filterDebounceTimer = setTimeout(applyFiltersImmediate, FILTER_DEBOUNCE_MS);
         }
 
-        function applyFiltersImmediate() {
+        async function applyFiltersImmediate() {
             const contentBody = document.getElementById('contentBody');
             contentBody.innerHTML = '<div class="loading"></div>';
             
-            requestAnimationFrame(() => {
-                const filterReqId = document.getElementById('filterReqId').value.trim();
-                const filterContent = document.getElementById('filterContent').value.trim().toLowerCase();
-                const filterType = document.getElementById('filterType').checked;
-                const filterMsg = document.getElementById('filterMsg').checked;
-                const filterRequestBody = document.getElementById('filterRequestBody').checked;
-                const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
-                
-                const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse;
-                const hasReqIdFilter = filterReqId !== '';
-                const hasContentFilter = filterContent !== '';
-                
-                if (!hasCheckboxFilter && !hasReqIdFilter && !hasContentFilter) {
-                    filteredEntries = logEntries;
-                } else {
-                    filteredEntries = logEntries.filter(entry => {
-                        if (hasReqIdFilter) {
-                            if (!entry.json || !entry.json.reqId || !entry.json.reqId.includes(filterReqId)) {
-                                return false;
-                            }
-                        }
-                        
-                        if (hasContentFilter) {
-                            if (!entry.raw.toLowerCase().includes(filterContent)) {
-                                return false;
-                            }
-                        }
-                        
-                        if (hasCheckboxFilter) {
-                            if (!entry.json) return false;
-                            const hasType = filterType && entry.json.type;
-                            const hasMsg = filterMsg && entry.json.msg;
-                            const hasRequestBody = filterRequestBody && entry.json.type === 'request body';
-                            const hasOriginalResponse = filterOriginalResponse && (entry.json.tppe === 'Original Response' || entry.json.type === 'Original Response');
-                            return hasType || hasMsg || hasRequestBody || hasOriginalResponse;
-                        }
-                        
-                        return true;
-                    });
+            const filterRequestBody = document.getElementById('filterRequestBody').checked;
+            if (filterRequestBody) {
+                try {
+                    await ensureFullFileLoadedForFilters();
+                } catch (e) {
                 }
-                
-                renderLogEntries(filteredEntries);
-            });
+            }
+
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            const filterReqId = document.getElementById('filterReqId').value.trim();
+            const filterContent = document.getElementById('filterContent').value.trim().toLowerCase();
+            const filterType = document.getElementById('filterType').checked;
+            const filterMsg = document.getElementById('filterMsg').checked;
+            const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
+            
+            const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse;
+            const hasReqIdFilter = filterReqId !== '';
+            const hasContentFilter = filterContent !== '';
+            
+            if (!hasCheckboxFilter && !hasReqIdFilter && !hasContentFilter) {
+                filteredEntries = logEntries;
+            } else {
+                filteredEntries = logEntries.filter(entry => {
+                    if (hasReqIdFilter) {
+                        if (!entry.json || !entry.json.reqId || !entry.json.reqId.includes(filterReqId)) {
+                            return false;
+                        }
+                    }
+                    
+                    if (hasContentFilter) {
+                        if (!entry.raw.toLowerCase().includes(filterContent)) {
+                            return false;
+                        }
+                    }
+                    
+                    if (hasCheckboxFilter) {
+                        if (!entry.json) return false;
+                        const hasType = filterType && entry.json.type;
+                        const hasMsg = filterMsg && entry.json.msg;
+                        const hasRequestBody = filterRequestBody && isRequestBodyEntry(entry.json);
+                        const hasOriginalResponse = filterOriginalResponse && (entry.json.tppe === 'Original Response' || entry.json.type === 'Original Response');
+                        return hasType || hasMsg || hasRequestBody || hasOriginalResponse;
+                    }
+                    
+                    return true;
+                });
+            }
+            
+            renderLogEntries(filteredEntries);
         }
 
         function renderLogEntries(entries) {
+            currentViewMode = 'log';
+            currentChatState = null;
             const contentBody = document.getElementById('contentBody');
             const logCount = document.getElementById('logCount');
             const shareBtn = document.getElementById('shareBtn');
@@ -1099,6 +1522,7 @@
                             <span class="log-toggle">▶</span>
                             <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制 JSON">📋</span>
                             <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整 JSON">⧉</span>
+                            <span class="log-chat-view" onclick="openChatViewFromLine(${entry.index}, event)" title="会话视图">💬</span>
                             <span class="log-line-num">${entry.index}</span>
                             <span class="log-time">${time}</span>
                             <span class="log-level ${levelClass}">${levelText}</span>
@@ -1272,30 +1696,44 @@
         }
 
         function shareLink() {
-            if (!currentFile || !currentSource) {
-                showToast('请先选择文件');
-                return;
+            let params = new URLSearchParams();
+
+            if (currentViewMode === 'chat') {
+                if (!currentChatState || currentChatState.type !== 'line') {
+                    showToast('请先从日志行打开会话视图');
+                    return;
+                } else if (currentChatState.type === 'line') {
+                    params.set('mode', 'chat');
+                    params.set('chat', 'line');
+                    params.set('file', currentChatState.file);
+                    params.set('source', currentChatState.source);
+                    params.set('line', String(currentChatState.line));
+                }
+            } else {
+                if (!currentFile || !currentSource) {
+                    showToast('请先选择文件');
+                    return;
+                }
+
+                params.set('file', currentFile);
+                params.set('source', currentSource);
+
+                const filterReqId = document.getElementById('filterReqId').value.trim();
+                const filterContent = document.getElementById('filterContent').value.trim();
+                const filterType = document.getElementById('filterType').checked;
+                const filterMsg = document.getElementById('filterMsg').checked;
+                const filterRequestBody = document.getElementById('filterRequestBody').checked;
+                const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
+
+                if (filterReqId) params.set('reqId', filterReqId);
+                if (filterContent) params.set('content', filterContent);
+                if (filterType) params.set('type', '1');
+                if (filterMsg) params.set('msg', '1');
+                if (filterRequestBody) params.set('requestBody', '1');
+                if (filterOriginalResponse) params.set('originalResponse', '1');
             }
-            
-            const params = new URLSearchParams();
-            params.set('file', currentFile);
-            params.set('source', currentSource);
-            
-            const filterReqId = document.getElementById('filterReqId').value.trim();
-            const filterContent = document.getElementById('filterContent').value.trim();
-            const filterType = document.getElementById('filterType').checked;
-            const filterMsg = document.getElementById('filterMsg').checked;
-            const filterRequestBody = document.getElementById('filterRequestBody').checked;
-            const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
-            
-            if (filterReqId) params.set('reqId', filterReqId);
-            if (filterContent) params.set('content', filterContent);
-            if (filterType) params.set('type', '1');
-            if (filterMsg) params.set('msg', '1');
-            if (filterRequestBody) params.set('requestBody', '1');
-            if (filterOriginalResponse) params.set('originalResponse', '1');
-            
-            const shareUrl = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+
+            const shareUrl = `${window.location.origin}${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
             
             copyToClipboard(shareUrl).then(() => {
                 showToast('分享链接已复制到剪贴板');
@@ -1306,12 +1744,27 @@
 
         function loadFromUrlParams() {
             const params = new URLSearchParams(window.location.search);
+            const mode = params.get('mode') || '';
+            const chat = params.get('chat') || '';
+
+            if (mode === 'chat' || chat) {
+                if (chat === 'line') {
+                    const file = params.get('file');
+                    const source = params.get('source');
+                    const line = Number.parseInt(params.get('line') || '', 10);
+                    if (!file || !source || !Number.isFinite(line) || line < 1) return null;
+                    return { mode: 'chat', chat: { type: 'line', file, source, line } };
+                }
+                return null;
+            }
+
             const file = params.get('file');
             const source = params.get('source');
             
             if (!file || !source) return null;
             
             return {
+                mode: 'log',
                 file,
                 source,
                 reqId: params.get('reqId') || '',
@@ -1430,6 +1883,7 @@
             currentFile = filename;
             currentSource = source;
             currentStartOffset = 0;
+            currentFileLoadedFull = false;
             renderFileList();
             
             const contentBody = document.getElementById('contentBody');
@@ -1445,6 +1899,8 @@
                 const data = await response.json();
                 currentStartOffset = Number.isFinite(data.startOffset) ? data.startOffset : 0;
                 currentSkippedLines = Number.isFinite(data.skippedLines) ? data.skippedLines : 0;
+                currentFileTruncated = !!data.truncated;
+                currentFileSizeBytes = Number.isFinite(data.size) ? data.size : 0;
                 logEntries = parseLogContent(data.content, currentSkippedLines);
                 expandedEntries.clear();
                 expandedDetailHeight = 0;
@@ -1504,11 +1960,18 @@
                             }
                             refreshTimer = setTimeout(async () => {
                                 try {
-                                    const response = await fetch(`/api/files/${encodeURIComponent(currentFile)}?source=${currentSource}`);
+                                    const params = new URLSearchParams();
+                                    params.set('source', currentSource);
+                                    if (currentFileLoadedFull) {
+                                        params.set('full', '1');
+                                    }
+                                    const response = await fetch(`/api/files/${encodeURIComponent(currentFile)}?${params.toString()}`);
                                     if (!response.ok) return;
                                     const data = await response.json();
                                     currentStartOffset = Number.isFinite(data.startOffset) ? data.startOffset : 0;
                                     currentSkippedLines = Number.isFinite(data.skippedLines) ? data.skippedLines : 0;
+                                    currentFileTruncated = !!data.truncated;
+                                    currentFileSizeBytes = Number.isFinite(data.size) ? data.size : currentFileSizeBytes;
                                     logEntries = parseLogContent(data.content, currentSkippedLines);
                                     applyFilters();
                                     const contentBody = document.getElementById('contentBody');
@@ -1566,18 +2029,32 @@
                 
                 const urlState = loadFromUrlParams();
                 if (urlState) {
-                    const fileExists = files.some(f => f.name === urlState.file && f.source === urlState.source);
-                    if (fileExists) {
-                        await selectFile(urlState.file, urlState.source);
-                        
-                        document.getElementById('filterReqId').value = urlState.reqId;
-                        document.getElementById('filterContent').value = urlState.content;
-                        document.getElementById('filterType').checked = urlState.type;
-                        document.getElementById('filterMsg').checked = urlState.msg;
-                        document.getElementById('filterRequestBody').checked = urlState.requestBody;
-                        document.getElementById('filterOriginalResponse').checked = urlState.originalResponse;
-                        
-                        applyFilters();
+                    if (urlState.mode === 'chat') {
+                        if (urlState.chat && urlState.chat.type === 'line') {
+                            const fileExists = files.some(f => f.name === urlState.chat.file && f.source === urlState.chat.source);
+                            if (!fileExists) {
+                                setContentError('分享的文件不存在或不可用');
+                            } else {
+                                currentFile = urlState.chat.file;
+                                currentSource = urlState.chat.source;
+                                renderFileList();
+                                openChatViewFromLine(urlState.chat.line, null, true);
+                            }
+                        }
+                    } else {
+                        const fileExists = files.some(f => f.name === urlState.file && f.source === urlState.source);
+                        if (fileExists) {
+                            await selectFile(urlState.file, urlState.source);
+                            
+                            document.getElementById('filterReqId').value = urlState.reqId;
+                            document.getElementById('filterContent').value = urlState.content;
+                            document.getElementById('filterType').checked = urlState.type;
+                            document.getElementById('filterMsg').checked = urlState.msg;
+                            document.getElementById('filterRequestBody').checked = urlState.requestBody;
+                            document.getElementById('filterOriginalResponse').checked = urlState.originalResponse;
+                            
+                            applyFilters();
+                        }
                     }
                 }
             } catch (error) {
