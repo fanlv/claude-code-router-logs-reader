@@ -1506,8 +1506,9 @@
 
         function enterChatMode(title) {
             currentViewMode = 'chat';
+            const isStandalone = new URLSearchParams(window.location.search).get('standalone') === '1';
             document.getElementById('filterGroup').style.display = 'none';
-            document.getElementById('backBtn').style.display = 'inline-block';
+            document.getElementById('backBtn').style.display = isStandalone ? 'none' : 'inline-block';
             document.getElementById('viewJsonBtn').style.display = 'inline-block';
             document.getElementById('shareBtn').style.display = 'inline-block';
             document.getElementById('expandAllBtn').style.display = 'none';
@@ -1536,6 +1537,22 @@
             enterChatMode(title);
             chatMessages = buildChatMessages(data);
             renderChatMessages();
+        }
+
+        function openChatViewInNewTab(index, event) {
+            if (event) event.stopPropagation();
+            if (!currentFile || !currentSource) {
+                showToast('请先选择文件');
+                return;
+            }
+            const params = new URLSearchParams();
+            params.set('mode', 'chat');
+            params.set('chat', 'line');
+            params.set('file', currentFile);
+            params.set('source', currentSource);
+            params.set('line', String(index));
+            params.set('standalone', '1');
+            window.open(`${window.location.pathname}?${params.toString()}`, '_blank');
         }
 
         function openChatViewFromLine(index, event, replaceUrl) {
@@ -1961,7 +1978,7 @@
                             <span class="log-toggle">▶</span>
                             <span class="log-copy" onclick="copyJson(${entry.index}, event)" title="复制 JSON">📋</span>
                             <span class="log-view-full" onclick="viewFullJson(${entry.index}, event)" title="查看完整 JSON">⧉</span>
-                            <span class="log-chat-view" onclick="openChatViewFromLine(${entry.index}, event)" title="会话视图">💬</span>
+                            <span class="log-chat-view" onclick="openChatViewInNewTab(${entry.index}, event)" title="在新标签页打开会话视图">💬</span>
                             <span class="log-line-num">${entry.index}</span>
                             <span class="log-time">${time}</span>
                             <span class="log-level ${levelClass}">${levelText}</span>
@@ -2476,6 +2493,10 @@
         }
 
         async function init() {
+            const isStandalone = new URLSearchParams(window.location.search).get('standalone') === '1';
+            if (isStandalone) {
+                document.querySelector('.sidebar').style.display = 'none';
+            }
             try {
                 const response = await fetch('/api/files');
                 files = await response.json();
