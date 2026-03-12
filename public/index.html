@@ -742,6 +742,77 @@
         .chat-more:hover {
             text-decoration: underline;
         }
+
+        .chat-thinking {
+            opacity: 0.7;
+        }
+
+        .chat-tool {
+            margin-top: 8px;
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            border-radius: 8px;
+            background-color: rgba(255, 193, 7, 0.12);
+            overflow: hidden;
+        }
+
+        .chat-tool-meta {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            font-size: 11px;
+            color: #7a5a00;
+            background-color: rgba(255, 193, 7, 0.18);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+        }
+
+        .chat-tool-text {
+            margin: 0;
+            padding: 8px 10px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #333333;
+            background: transparent;
+        }
+
+        .chat-tool-lines {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 6px;
+        }
+
+        .chat-tool-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            background-color: rgba(255, 255, 255, 0.75);
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+        }
+
+        .chat-tool-line:hover {
+            background-color: rgba(255, 255, 255, 0.92);
+        }
+
+        .chat-tool-line-text {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            color: #333333;
+            word-break: break-all;
+        }
+
+        .chat-tool-line-copy {
+            color: #666666;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -786,6 +857,7 @@
                         </label>
                     </div>
                     <span class="log-count" id="logCount"></span>
+                    <button class="btn" id="backBtn" onclick="backToLogView()" style="display: none;">返回</button>
                     <button class="btn" id="shareBtn" onclick="shareLink()" style="display: none;">分享链接</button>
                     <button class="btn" id="expandAllBtn" onclick="expandAll()" style="display: none;">全部展开</button>
                     <button class="btn" id="collapseAllBtn" onclick="collapseAll()" style="display: none;">全部折叠</button>
@@ -1048,6 +1120,83 @@
             return parts.join('\n\n').trim();
         }
 
+        function buildChatBlocks(message) {
+            const items = normalizeMessageContent(message && message.content);
+            const blocks = [];
+            for (const item of items) {
+                if (typeof item === 'string') {
+                    if (item.trim()) blocks.push({ kind: 'text', text: item });
+                    continue;
+                }
+                if (!item || typeof item !== 'object') {
+                    const text = String(item || '');
+                    if (text.trim()) blocks.push({ kind: 'text', text });
+                    continue;
+                }
+                const type = item.type;
+                if (type === 'text') {
+                    const t = typeof item.text === 'string' ? item.text : '';
+                    if (t.trim()) blocks.push({ kind: 'text', text: t });
+                    continue;
+                }
+                if (type === 'thinking') {
+                    const t = typeof item.thinking === 'string' ? item.thinking : '';
+                    if (t.trim()) blocks.push({ kind: 'thinking', text: t });
+                    continue;
+                }
+                if (type === 'tool_use') {
+                    const name = typeof item.name === 'string' ? item.name : '';
+                    const input = item.input !== undefined ? safeJsonStringify(item.input) : '';
+                    const text = `${name || 'tool_use'}${input ? `\n${input}` : ''}`.trim();
+                    if (text) blocks.push({ kind: 'tool_use', name, text });
+                    continue;
+                }
+                if (type === 'tool_result') {
+                    const content = item.content !== undefined ? item.content : '';
+                    const t = typeof content === 'string' ? content : safeJsonStringify(content);
+                    if (t.trim()) blocks.push({ kind: 'tool_result', tool_use_id: item.tool_use_id, text: t });
+                    continue;
+                }
+                const fallback = safeJsonStringify(item);
+                if (fallback.trim()) blocks.push({ kind: 'text', text: fallback });
+            }
+            return blocks;
+        }
+
+        function copyAndToast(text) {
+            copyToClipboard(String(text)).then(() => {
+                showToast('已复制');
+            }).catch(err => {
+                showToast('复制失败：' + err.message);
+            });
+        }
+
+        function isLikelyFilePathLine(line) {
+            const s = String(line || '').trim();
+            if (!s) return false;
+            if (!s.startsWith('/')) return false;
+            if (s.includes(' ')) return false;
+            return true;
+        }
+
+        function renderToolResultBody(text) {
+            const raw = String(text || '');
+            const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+            if (lines.length >= 2 && lines.every(isLikelyFilePathLine)) {
+                return `
+                    <div class="chat-tool-lines">
+                        ${lines.map(line => `
+                            <div class="chat-tool-line" onclick="copyAndToast(${JSON.stringify(line)})" title="点击复制">
+                                <span class="chat-tool-line-text">${escapeHtml(line)}</span>
+                                <span class="chat-tool-line-copy">📋</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            return `<pre class="chat-tool-text">${escapeHtml(raw)}</pre>`;
+        }
+
         function buildChatMessages(data) {
             const messages = getMainAgentMessages(data);
             return messages.map((m, idx) => {
@@ -1056,6 +1205,7 @@
                     id: idx,
                     role,
                     text: messageToPlainText(m),
+                    blocks: buildChatBlocks(m),
                     raw: m
                 };
             });
@@ -1086,19 +1236,43 @@
             const role = msg && msg.role ? msg.role : 'unknown';
             const roleClass = role === 'user' ? 'user' : (role === 'assistant' ? 'assistant' : 'other');
             const roleLabel = role === 'user' ? '👤 用户' : (role === 'assistant' ? '🤖 助手' : role);
-            const full = msg && typeof msg.text === 'string' ? msg.text : '';
+            const blocks = msg && Array.isArray(msg.blocks) ? msg.blocks : buildChatBlocks(msg && msg.raw);
             const isExpanded = expandedChatMessageIds.has(msg.id);
-            const preview = truncateText(full, 100);
-            const hasMore = full.length > 100;
-            const shown = isExpanded ? full : preview;
+            const limit = 300;
+            const hasMore = blocks.some(b => b && typeof b.text === 'string' && b.text.length > limit);
             const moreBtn = hasMore
                 ? `<button class="chat-more" onclick="toggleChatMessage(${msg.id}, event)">${isExpanded ? '收起' : '更多'}</button>`
                 : '';
+            const body = blocks.map(b => {
+                const kind = b && b.kind ? b.kind : 'text';
+                const fullText = b && typeof b.text === 'string' ? b.text : '';
+                const shown = isExpanded ? fullText : truncateText(fullText, limit);
+                if (kind === 'tool_result') {
+                    return `
+                        <div class="chat-tool">
+                            <div class="chat-tool-meta" title="${escapeHtml(String(b.tool_use_id || ''))}">🔧 工具回复</div>
+                            ${renderToolResultBody(shown)}
+                        </div>
+                    `;
+                }
+                if (kind === 'tool_use') {
+                    return `
+                        <div class="chat-tool">
+                            <div class="chat-tool-meta">🔧 工具调用</div>
+                            <pre class="chat-tool-text">${escapeHtml(shown)}</pre>
+                        </div>
+                    `;
+                }
+                if (kind === 'thinking') {
+                    return `<pre class="chat-text chat-thinking">${escapeHtml(shown)}</pre>`;
+                }
+                return `<pre class="chat-text">${escapeHtml(shown)}</pre>`;
+            }).join('');
             return `
                 <div class="chat-row ${roleClass}">
                     <div class="chat-bubble">
                         <div class="chat-meta">${escapeHtml(roleLabel)}</div>
-                        <pre class="chat-text">${escapeHtml(shown)}</pre>
+                        ${body}
                         ${moreBtn}
                     </div>
                 </div>
@@ -1118,6 +1292,7 @@
         function enterChatMode(title) {
             currentViewMode = 'chat';
             document.getElementById('filterGroup').style.display = 'none';
+            document.getElementById('backBtn').style.display = 'inline-block';
             document.getElementById('shareBtn').style.display = 'inline-block';
             document.getElementById('expandAllBtn').style.display = 'none';
             document.getElementById('collapseAllBtn').style.display = 'none';
@@ -1201,6 +1376,50 @@
                 params.set('source', state.source);
                 params.set('line', String(state.line));
                 setUrlSearchParams(params, replace);
+                return;
+            }
+        }
+
+        function setLogUrlState(replace) {
+            if (!currentFile || !currentSource) {
+                setUrlSearchParams(new URLSearchParams(), replace);
+                return;
+            }
+
+            const params = new URLSearchParams();
+            params.set('file', currentFile);
+            params.set('source', currentSource);
+
+            const filterReqId = document.getElementById('filterReqId').value.trim();
+            const filterContent = document.getElementById('filterContent').value.trim();
+            const filterType = document.getElementById('filterType').checked;
+            const filterMsg = document.getElementById('filterMsg').checked;
+            const filterRequestBody = document.getElementById('filterRequestBody').checked;
+            const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
+
+            if (filterReqId) params.set('reqId', filterReqId);
+            if (filterContent) params.set('content', filterContent);
+            if (filterType) params.set('type', '1');
+            if (filterMsg) params.set('msg', '1');
+            if (filterRequestBody) params.set('requestBody', '1');
+            if (filterOriginalResponse) params.set('originalResponse', '1');
+
+            setUrlSearchParams(params, replace);
+        }
+
+        async function backToLogView() {
+            if (currentViewMode !== 'chat') return;
+
+            currentChatState = null;
+            setLogUrlState(false);
+
+            if (currentFile && currentSource && Array.isArray(logEntries) && logEntries.length > 0) {
+                renderLogEntries(Array.isArray(filteredEntries) ? filteredEntries : logEntries);
+                return;
+            }
+
+            if (currentFile && currentSource) {
+                await selectFile(currentFile, currentSource);
                 return;
             }
         }
@@ -1393,6 +1612,7 @@
             currentChatState = null;
             const contentBody = document.getElementById('contentBody');
             const logCount = document.getElementById('logCount');
+            const backBtn = document.getElementById('backBtn');
             const shareBtn = document.getElementById('shareBtn');
             const expandAllBtn = document.getElementById('expandAllBtn');
             const collapseAllBtn = document.getElementById('collapseAllBtn');
@@ -1405,6 +1625,7 @@
             } else {
                 logCount.textContent = `${totalCount} 条日志`;
             }
+            backBtn.style.display = 'none';
             shareBtn.style.display = 'inline-block';
             expandAllBtn.style.display = 'inline-block';
             collapseAllBtn.style.display = 'inline-block';
@@ -1796,6 +2017,7 @@
                     currentSource = null;
                     document.getElementById('contentTitle').textContent = '选择一个文件查看';
                     document.getElementById('logCount').textContent = '';
+                    document.getElementById('backBtn').style.display = 'none';
                     document.getElementById('shareBtn').style.display = 'none';
                     document.getElementById('expandAllBtn').style.display = 'none';
                     document.getElementById('collapseAllBtn').style.display = 'none';
@@ -1995,6 +2217,7 @@
                             currentFile = null;
                             document.getElementById('contentTitle').textContent = '选择一个文件查看';
                             document.getElementById('logCount').textContent = '';
+                            document.getElementById('backBtn').style.display = 'none';
                             document.getElementById('shareBtn').style.display = 'none';
                             document.getElementById('expandAllBtn').style.display = 'none';
                             document.getElementById('collapseAllBtn').style.display = 'none';
