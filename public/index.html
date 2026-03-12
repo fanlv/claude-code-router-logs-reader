@@ -1587,6 +1587,9 @@
         }
 
         function setUrlSearchParams(params, replace) {
+            if (new URLSearchParams(window.location.search).get('standalone') === '1') {
+                params.set('standalone', '1');
+            }
             const search = params && params.toString ? params.toString() : '';
             const url = `${window.location.pathname}${search ? `?${search}` : ''}`;
             if (replace) {
