@@ -727,31 +727,71 @@
             white-space: pre-wrap;
             word-break: break-word;
             color: #333333;
+            padding: 4px 0;
         }
 
-        .chat-more {
-            margin-top: 6px;
+        /* Per-block expand/collapse */
+        .chat-block-toggle {
             font-size: 12px;
             border: none;
             background: transparent;
             color: #007acc;
             cursor: pointer;
-            padding: 0;
+            padding: 2px 6px;
+            margin-left: 8px;
+            border-radius: 3px;
         }
 
-        .chat-more:hover {
+        .chat-block-toggle:hover {
+            background-color: rgba(0, 122, 204, 0.08);
             text-decoration: underline;
         }
 
-        .chat-thinking {
-            opacity: 0.7;
+        .chat-block-body {
+            overflow: hidden;
+            transition: max-height 0.2s ease;
         }
 
+        /* Thinking blocks - purple/indigo theme */
+        .chat-block-thinking {
+            margin-top: 6px;
+            border: 1px solid rgba(103, 58, 183, 0.2);
+            border-radius: 8px;
+            background-color: rgba(103, 58, 183, 0.06);
+            overflow: hidden;
+        }
+
+        .chat-block-thinking-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #5e35b1;
+            background-color: rgba(103, 58, 183, 0.1);
+            border-bottom: 1px solid rgba(103, 58, 183, 0.12);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .chat-block-thinking-header:hover {
+            background-color: rgba(103, 58, 183, 0.15);
+        }
+
+        .chat-block-thinking .chat-text {
+            font-style: italic;
+            color: #5e35b1;
+            opacity: 0.85;
+            padding: 8px 10px;
+        }
+
+        /* Tool use blocks - amber theme */
         .chat-tool {
-            margin-top: 8px;
+            margin-top: 6px;
             border: 1px solid rgba(0, 0, 0, 0.08);
             border-radius: 8px;
-            background-color: rgba(255, 193, 7, 0.12);
+            background-color: rgba(255, 193, 7, 0.08);
             overflow: hidden;
         }
 
@@ -759,11 +799,27 @@
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 6px 10px;
+            padding: 5px 10px;
             font-size: 11px;
             color: #7a5a00;
-            background-color: rgba(255, 193, 7, 0.18);
+            background-color: rgba(255, 193, 7, 0.15);
             border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .chat-tool-meta:hover {
+            background-color: rgba(255, 193, 7, 0.22);
+        }
+
+        .chat-tool-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            color: #fff;
+            background-color: #f59e0b;
         }
 
         .chat-tool-text {
@@ -776,6 +832,80 @@
             word-break: break-word;
             color: #333333;
             background: transparent;
+        }
+
+        /* Tool result blocks - green theme */
+        .chat-block-tool-result {
+            margin-top: 6px;
+            border: 1px solid rgba(76, 175, 80, 0.2);
+            border-radius: 8px;
+            background-color: rgba(76, 175, 80, 0.06);
+            overflow: hidden;
+        }
+
+        .chat-block-tool-result-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #2e7d32;
+            background-color: rgba(76, 175, 80, 0.1);
+            border-bottom: 1px solid rgba(76, 175, 80, 0.12);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .chat-block-tool-result-header:hover {
+            background-color: rgba(76, 175, 80, 0.15);
+        }
+
+        .chat-block-tool-result .chat-tool-text {
+            color: #333;
+        }
+
+        /* System reminder blocks - grey theme */
+        .chat-block-system {
+            margin-top: 6px;
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            background-color: rgba(0, 0, 0, 0.03);
+            overflow: hidden;
+        }
+
+        .chat-block-system-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #888;
+            background-color: rgba(0, 0, 0, 0.05);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .chat-block-system-header:hover {
+            background-color: rgba(0, 0, 0, 0.08);
+        }
+
+        .chat-block-system .chat-text {
+            color: #888;
+        }
+
+        /* Redacted thinking - grey pill */
+        .chat-redacted-pill {
+            display: inline-block;
+            margin-top: 4px;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            color: #999;
+            background-color: #f0f0f0;
+            border: 1px solid #e0e0e0;
         }
 
         .chat-tool-lines {
@@ -812,6 +942,16 @@
         .chat-tool-line-copy {
             color: #666666;
             flex-shrink: 0;
+        }
+
+        .chat-block-preview {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 11px;
+            color: #999;
+            padding: 0 10px 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
     </style>
 </head>
@@ -908,7 +1048,7 @@
         let filterDebounceTimer = null;
         const FILTER_DEBOUNCE_MS = 150;
         let chatMessages = [];
-        const expandedChatMessageIds = new Set();
+        const expandedChatBlockIds = new Set();
         let currentViewMode = 'log';
         let currentChatState = null;
         let currentFileTruncated = false;
@@ -1125,7 +1265,10 @@
             const blocks = [];
             for (const item of items) {
                 if (typeof item === 'string') {
-                    if (item.trim()) blocks.push({ kind: 'text', text: item });
+                    if (item.trim()) {
+                        const kind = item.trim().startsWith('<system-reminder>') ? 'system' : 'text';
+                        blocks.push({ kind, text: item });
+                    }
                     continue;
                 }
                 if (!item || typeof item !== 'object') {
@@ -1134,9 +1277,16 @@
                     continue;
                 }
                 const type = item.type;
+                if (type === 'redacted_thinking') {
+                    blocks.push({ kind: 'redacted_thinking', text: '' });
+                    continue;
+                }
                 if (type === 'text') {
                     const t = typeof item.text === 'string' ? item.text : '';
-                    if (t.trim()) blocks.push({ kind: 'text', text: t });
+                    if (t.trim()) {
+                        const kind = t.trim().startsWith('<system-reminder>') ? 'system' : 'text';
+                        blocks.push({ kind, text: t });
+                    }
                     continue;
                 }
                 if (type === 'thinking') {
@@ -1147,8 +1297,7 @@
                 if (type === 'tool_use') {
                     const name = typeof item.name === 'string' ? item.name : '';
                     const input = item.input !== undefined ? safeJsonStringify(item.input) : '';
-                    const text = `${name || 'tool_use'}${input ? `\n${input}` : ''}`.trim();
-                    if (text) blocks.push({ kind: 'tool_use', name, text });
+                    blocks.push({ kind: 'tool_use', name, text: input || '' });
                     continue;
                 }
                 if (type === 'tool_result') {
@@ -1232,59 +1381,124 @@
             contentBody.innerHTML = `<div class="chat-container">${html}</div>`;
         }
 
+        function getBlockPreview(text, maxLen) {
+            const s = String(text || '');
+            const lines = s.split('\n');
+            const preview = lines.slice(0, 3).join('\n');
+            if (preview.length > maxLen) return preview.slice(0, maxLen) + '...';
+            if (lines.length > 3) return preview + '...';
+            return preview;
+        }
+
         function renderChatMessage(msg) {
             const role = msg && msg.role ? msg.role : 'unknown';
             const roleClass = role === 'user' ? 'user' : (role === 'assistant' ? 'assistant' : 'other');
             const roleLabel = role === 'user' ? '👤 用户' : (role === 'assistant' ? '🤖 助手' : role);
             const blocks = msg && Array.isArray(msg.blocks) ? msg.blocks : buildChatBlocks(msg && msg.raw);
-            const isExpanded = expandedChatMessageIds.has(msg.id);
-            const limit = 300;
-            const hasMore = blocks.some(b => b && typeof b.text === 'string' && b.text.length > limit);
-            const moreBtn = hasMore
-                ? `<button class="chat-more" onclick="toggleChatMessage(${msg.id}, event)">${isExpanded ? '收起' : '更多'}</button>`
-                : '';
-            const body = blocks.map(b => {
+
+            const body = blocks.map((b, blockIdx) => {
                 const kind = b && b.kind ? b.kind : 'text';
                 const fullText = b && typeof b.text === 'string' ? b.text : '';
-                const shown = isExpanded ? fullText : truncateText(fullText, limit);
-                if (kind === 'tool_result') {
-                    return `
-                        <div class="chat-tool">
-                            <div class="chat-tool-meta" title="${escapeHtml(String(b.tool_use_id || ''))}">🔧 工具回复</div>
-                            ${renderToolResultBody(shown)}
-                        </div>
-                    `;
+                const blockId = `${msg.id}-${blockIdx}`;
+                const isExpanded = expandedChatBlockIds.has(blockId);
+
+                if (kind === 'redacted_thinking') {
+                    return `<span class="chat-redacted-pill">🔒 加密思考</span>`;
                 }
-                if (kind === 'tool_use') {
-                    return `
-                        <div class="chat-tool">
-                            <div class="chat-tool-meta">🔧 工具调用</div>
-                            <pre class="chat-tool-text">${escapeHtml(shown)}</pre>
-                        </div>
-                    `;
-                }
+
                 if (kind === 'thinking') {
-                    return `<pre class="chat-text chat-thinking">${escapeHtml(shown)}</pre>`;
+                    const arrow = isExpanded ? '▾' : '▸';
+                    const bodyHtml = isExpanded
+                        ? `<pre class="chat-text">${escapeHtml(fullText)}</pre>`
+                        : (fullText.length > 0 ? `<div class="chat-block-preview">${escapeHtml(getBlockPreview(fullText, 100))}</div>` : '');
+                    return `
+                        <div class="chat-block-thinking">
+                            <div class="chat-block-thinking-header" onclick="toggleChatBlock('${blockId}', event)">
+                                <span>💭 思考 ${arrow}</span>
+                                <span class="chat-block-toggle">${isExpanded ? '收起' : '展开'}</span>
+                            </div>
+                            ${bodyHtml}
+                        </div>
+                    `;
                 }
-                return `<pre class="chat-text">${escapeHtml(shown)}</pre>`;
+
+                if (kind === 'tool_use') {
+                    const toolName = b.name || 'tool';
+                    const arrow = isExpanded ? '▾' : '▸';
+                    const bodyHtml = isExpanded
+                        ? `<pre class="chat-tool-text">${escapeHtml(fullText)}</pre>`
+                        : (fullText.length > 0 ? `<div class="chat-block-preview">${escapeHtml(getBlockPreview(fullText, 100))}</div>` : '');
+                    return `
+                        <div class="chat-tool">
+                            <div class="chat-tool-meta" onclick="toggleChatBlock('${blockId}', event)">
+                                <span>🔧 工具调用</span>
+                                <span class="chat-tool-badge">${escapeHtml(toolName)}</span>
+                                <span style="margin-left:auto">${arrow}</span>
+                                <span class="chat-block-toggle">${isExpanded ? '收起' : '展开'}</span>
+                            </div>
+                            ${bodyHtml}
+                        </div>
+                    `;
+                }
+
+                if (kind === 'tool_result') {
+                    const arrow = isExpanded ? '▾' : '▸';
+                    const bodyHtml = isExpanded
+                        ? renderToolResultBody(fullText)
+                        : (fullText.length > 0 ? `<div class="chat-block-preview">${escapeHtml(getBlockPreview(fullText, 100))}</div>` : '');
+                    return `
+                        <div class="chat-block-tool-result">
+                            <div class="chat-block-tool-result-header" onclick="toggleChatBlock('${blockId}', event)" title="${escapeHtml(String(b.tool_use_id || ''))}">
+                                <span>🔧 工具结果 ${arrow}</span>
+                                <span class="chat-block-toggle">${isExpanded ? '收起' : '展开'}</span>
+                            </div>
+                            ${bodyHtml}
+                        </div>
+                    `;
+                }
+
+                if (kind === 'system') {
+                    const arrow = isExpanded ? '▾' : '▸';
+                    const bodyHtml = isExpanded
+                        ? `<pre class="chat-text">${escapeHtml(fullText)}</pre>`
+                        : '';
+                    return `
+                        <div class="chat-block-system">
+                            <div class="chat-block-system-header" onclick="toggleChatBlock('${blockId}', event)">
+                                <span>⚙️ 系统提示 ${arrow}</span>
+                                <span class="chat-block-toggle">${isExpanded ? '收起' : '展开'}</span>
+                            </div>
+                            ${bodyHtml}
+                        </div>
+                    `;
+                }
+
+                // kind === 'text'
+                if (fullText.length <= 300) {
+                    return `<pre class="chat-text">${escapeHtml(fullText)}</pre>`;
+                }
+                // Long text: collapsible
+                const shown = isExpanded ? fullText : truncateText(fullText, 300);
+                const toggle = `<button class="chat-block-toggle" onclick="toggleChatBlock('${blockId}', event)">${isExpanded ? '收起' : '展开'}</button>`;
+                return `<pre class="chat-text">${escapeHtml(shown)}${isExpanded ? '' : '...'}</pre>${toggle}`;
             }).join('');
+
             return `
                 <div class="chat-row ${roleClass}">
                     <div class="chat-bubble">
                         <div class="chat-meta">${escapeHtml(roleLabel)}</div>
                         ${body}
-                        ${moreBtn}
                     </div>
                 </div>
             `;
         }
 
-        function toggleChatMessage(id, event) {
+        function toggleChatBlock(blockId, event) {
             if (event) event.stopPropagation();
-            if (expandedChatMessageIds.has(id)) {
-                expandedChatMessageIds.delete(id);
+            if (expandedChatBlockIds.has(blockId)) {
+                expandedChatBlockIds.delete(blockId);
             } else {
-                expandedChatMessageIds.add(id);
+                expandedChatBlockIds.add(blockId);
             }
             renderChatMessages();
         }
@@ -1298,7 +1512,7 @@
             document.getElementById('collapseAllBtn').style.display = 'none';
             document.getElementById('logCount').textContent = '';
             document.getElementById('contentTitle').textContent = title || '对话';
-            expandedChatMessageIds.clear();
+            expandedChatBlockIds.clear();
             chatMessages = [];
         }
 
