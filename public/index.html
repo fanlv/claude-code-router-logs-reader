@@ -995,6 +995,10 @@
                             <input type="checkbox" id="filterOriginalResponse" onchange="applyFilters()">
                             <span>Original Response</span>
                         </label>
+                        <label class="filter-checkbox">
+                            <input type="checkbox" id="filterProxyRequest" onchange="applyFilters()">
+                            <span>proxy request</span>
+                        </label>
                     </div>
                     <span class="log-count" id="logCount"></span>
                     <button class="btn" id="backBtn" onclick="backToLogView()" style="display: none;">返回</button>
@@ -1632,6 +1636,7 @@
             const filterMsg = document.getElementById('filterMsg').checked;
             const filterRequestBody = document.getElementById('filterRequestBody').checked;
             const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
+            const filterProxyRequest = document.getElementById('filterProxyRequest').checked;
 
             if (filterReqId) params.set('reqId', filterReqId);
             if (filterContent) params.set('content', filterContent);
@@ -1639,6 +1644,7 @@
             if (filterMsg) params.set('msg', '1');
             if (filterRequestBody) params.set('requestBody', '1');
             if (filterOriginalResponse) params.set('originalResponse', '1');
+            if (filterProxyRequest) params.set('proxyRequest', '1');
 
             setUrlSearchParams(params, replace);
         }
@@ -1806,8 +1812,9 @@
             const filterType = document.getElementById('filterType').checked;
             const filterMsg = document.getElementById('filterMsg').checked;
             const filterOriginalResponse = document.getElementById('filterOriginalResponse').checked;
-            
-            const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse;
+            const filterProxyRequest = document.getElementById('filterProxyRequest').checked;
+
+            const hasCheckboxFilter = filterType || filterMsg || filterRequestBody || filterOriginalResponse || filterProxyRequest;
             const hasReqIdFilter = filterReqId !== '';
             const hasContentFilter = filterContent !== '';
             
@@ -1833,7 +1840,8 @@
                         const hasMsg = filterMsg && entry.json.msg;
                         const hasRequestBody = filterRequestBody && isRequestBodyEntry(entry.json);
                         const hasOriginalResponse = filterOriginalResponse && (entry.json.tppe === 'Original Response' || entry.json.type === 'Original Response');
-                        return hasType || hasMsg || hasRequestBody || hasOriginalResponse;
+                        const hasProxyRequest = filterProxyRequest && entry.json.type === 'request' && typeof entry.json.url === 'string' && entry.json.url.includes('/v1/messages');
+                        return hasType || hasMsg || hasRequestBody || hasOriginalResponse || hasProxyRequest;
                     }
                     
                     return true;
@@ -2243,7 +2251,8 @@
                 type: params.get('type') === '1',
                 msg: params.get('msg') === '1',
                 requestBody: params.get('requestBody') === '1',
-                originalResponse: params.get('originalResponse') === '1'
+                originalResponse: params.get('originalResponse') === '1',
+                proxyRequest: params.get('proxyRequest') === '1'
             };
         }
 
@@ -2384,6 +2393,7 @@
                 document.getElementById('filterMsg').checked = false;
                 document.getElementById('filterRequestBody').checked = false;
                 document.getElementById('filterOriginalResponse').checked = false;
+                document.getElementById('filterProxyRequest').checked = false;
                 filteredEntries = logEntries;
                 renderLogEntries(filteredEntries);
             } catch (error) {
@@ -2530,6 +2540,7 @@
                             document.getElementById('filterMsg').checked = urlState.msg;
                             document.getElementById('filterRequestBody').checked = urlState.requestBody;
                             document.getElementById('filterOriginalResponse').checked = urlState.originalResponse;
+                            document.getElementById('filterProxyRequest').checked = urlState.proxyRequest;
                             
                             applyFilters();
                         }
